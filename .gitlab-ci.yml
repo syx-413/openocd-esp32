@@ -5,11 +5,15 @@ stages:
   - build_idf5.0.x
   - build_idf5.1.x
   - build_idf5.2.x
+  - build_idf5.3.x
+  - build_idf5.4.x
   - build_idf_master
   - build_nuttx
   - test_idf5.0.x
   - test_idf5.1.x
   - test_idf5.2.x
+  - test_idf5.3.x
+  - test_idf5.4.x
   - test_idf_master
   - test_host
   - test_nuttx
@@ -17,11 +21,15 @@ stages:
   - sanitizer_test_idf5.0.x
   - sanitizer_test_idf5.1.x
   - sanitizer_test_idf5.2.x
+  - sanitizer_test_idf5.3.x
+  - sanitizer_test_idf5.4.x
   - sanitizer_test_idf_master
   - sanitizer_test_nuttx
   - sanitizer_check_idf5.0.x
   - sanitizer_check_idf5.1.x
   - sanitizer_check_idf5.2.x
+  - sanitizer_check_idf5.3.x
+  - sanitizer_check_idf5.4.x
   - sanitizer_check_idf_master
   - sanitizer_check_nuttx
   - deploy
@@ -32,6 +40,10 @@ stages:
   - update_idf_tools
 
 image: $CI_DOCKER_REGISTRY/openocd-ci-env:1
+
+default:
+  interruptible: true
+  retry: 2
 
 variables:
 
@@ -226,6 +238,18 @@ test_idf_master_examples:
     BOT_LABEL_EXAMPLE_TEST: "1"
     IDF_TEST_BRANCH: "master"
 
+test_idf5.4.x_examples:
+  extends:
+    - .test_idf_examples
+  variables:
+    IDF_TEST_BRANCH: ${TEST_APP_IDF5_4_RELEASE_BRANCH}
+
+test_idf5.3.x_examples:
+  extends:
+    - .test_idf_examples
+  variables:
+    IDF_TEST_BRANCH: ${TEST_APP_IDF5_3_RELEASE_BRANCH}
+
 test_idf5.2.x_examples:
   extends:
     - .test_idf_examples
@@ -296,6 +320,34 @@ create_coverage_reports:
     - job: tests_armhf_esp32c3_idf5.2.x_flash_encrypted
     - job: tests_armhf_esp32c6_idf5.2.x
     - job: tests_armhf_esp32h2_idf5.2.x
+    # idf 5.3.x
+    - job: tests_armhf_esp32_idf5.3.x
+    - job: tests_armhf_esp32_idf5.3.x_flash_encrypted
+    - job: tests_armhf_esp32s2_idf5.3.x
+    - job: tests_armhf_esp32s2_idf5.3.x_flash_encrypted
+    - job: tests_armhf_esp32s3_idf5.3.x_dual
+    - job: tests_armhf_esp32s3_idf5.3.x_single
+    - job: tests_armhf_esp32c2_idf5.3.x
+    - job: tests_armhf_esp32c3_idf5.3.x
+    - job: tests_armhf_esp32c3_idf5.3.x_flash_encrypted
+    - job: tests_armhf_esp32c6_idf5.3.x
+    - job: tests_armhf_esp32h2_idf5.3.x
+    - job: tests_arm64_esp32p4_idf5.3.x
+    # idf 5.4.x
+    - job: tests_armhf_esp32_idf5.4.x
+    - job: tests_armhf_esp32_idf5.4.x_flash_encrypted
+    - job: tests_armhf_esp32s2_idf5.4.x
+    - job: tests_armhf_esp32s2_idf5.4.x_flash_encrypted
+    - job: tests_armhf_esp32s3_idf5.4.x_dual
+    - job: tests_armhf_esp32s3_idf5.4.x_single
+    - job: tests_armhf_esp32c2_idf5.4.x
+    - job: tests_armhf_esp32c3_idf5.4.x
+    - job: tests_armhf_esp32c3_idf5.4.x_flash_encrypted
+    - job: tests_arm64_esp32c5_idf5.4.x
+    - job: tests_armhf_esp32c6_idf5.4.x
+    - job: tests_arm64_esp32c61_idf5.4.x
+    - job: tests_armhf_esp32h2_idf5.4.x
+    - job: tests_arm64_esp32p4_idf5.4.x
     # idf master
     - job: tests_armhf_esp32
     - job: tests_armhf_esp32_flash_encrypted
@@ -306,13 +358,17 @@ create_coverage_reports:
     - job: tests_armhf_esp32c2
     - job: tests_armhf_esp32c3
     - job: tests_armhf_esp32c3_flash_encrypted
-    - job: tests_armhf_esp32c5
+    - job: tests_arm64_esp32c5
     - job: tests_armhf_esp32c6
+    - job: tests_arm64_esp32c61
     - job: tests_armhf_esp32h2
+    - job: tests_arm64_esp32p4
     - job: test_nuttx_esp32
     - job: test_nuttx_esp32s2
     - job: test_nuttx_esp32s3
     - job: test_nuttx_esp32c3
+    - job: test_nuttx_esp32c6
+    - job: test_nuttx_esp32h2
 
   script:
     - mkdir -p cov_infos
@@ -322,8 +378,9 @@ create_coverage_reports:
       folder_list=$(ls -d build_test_app*);
       for each_folder in $folder_list ;
       do
-      cp ${each_folder}/*.info cov_infos;
+      lcov --gcov-tool ${PWD}/${each_folder}/esp_cov_files/gcov --capture --directory ${each_folder}/esp_cov_files --output-file ${each_folder}/${each_folder}.info;
       done
+    - cp `find . -wholename "./build_test_app*/*.info" -size +0` cov_infos
     - ls -la cov_infos/
     # Creating a html report of coverage files.
     - genhtml --ignore-errors source cov_infos/*.info -o lcov_html_report/

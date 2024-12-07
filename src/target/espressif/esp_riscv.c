@@ -61,6 +61,10 @@ enum esp_riscv_exception_cause {
 
 #define ESP_RISCV_EXCEPTION_CAUSE(reg_val)  ((reg_val) & 0x1F)
 
+#define ESP_RISCV_LOAD_FP     0x07
+#define ESP_RISCV_STORE_FP    0x27
+#define ESP_RISCV_OP_FP       0x53
+
 #define ESP_SEMIHOSTING_WP_FLG_RD   (1UL << 0)
 #define ESP_SEMIHOSTING_WP_FLG_WR   (1UL << 1)
 
@@ -132,16 +136,36 @@ static void esp_riscv_print_exception_reason(struct target *target)
 	int result = riscv_get_register(target, &mcause, GDB_REGNO_MCAUSE);
 	if (result != ERROR_OK) {
 		LOG_ERROR("Failed to read mcause register. Unknown exception reason!");
-	} else {
-		/* Exception ID 0x0 (instruction access misaligned) is not present because CPU always masks the lowest
-		 * bit of the address during instruction fetch.
-		 * And (mcause(31) is 1 for interrupts and 0 for exceptions). We will print only exception reasons */
-		LOG_TARGET_DEBUG(target, "mcause=%" PRIx64, mcause);
-		if (mcause & BIT(31) || mcause == 0)
-			return;
-		LOG_TARGET_INFO(target, "Halt cause (%d) - (%s)", (int)ESP_RISCV_EXCEPTION_CAUSE(mcause),
-			esp_riscv_get_exception_reason(mcause));
+		return;
 	}
+
+	/* Exception ID 0x0 (instruction access misaligned) is not present because CPU always masks the lowest
+	* bit of the address during instruction fetch.
+	* And (mcause(31) is 1 for interrupts and 0 for exceptions). We will print only exception reasons */
+	LOG_TARGET_DEBUG(target, "mcause=0x%" PRIx64, mcause);
+	if (mcause & BIT(31) || ESP_RISCV_EXCEPTION_CAUSE(mcause) == 0)
+		return;
+
+	if (ESP_RISCV_EXCEPTION_CAUSE(mcause) == ILLEGAL_INSTRUCTION) {
+		riscv_reg_t mtval;
+		result = riscv_get_register(target, &mtval, CSR_MTVAL + GDB_REGNO_CSR0);
+		if (result != ERROR_OK) {
+			LOG_ERROR("Failed to read mtval register!");
+			return;
+		}
+		uint32_t opcode = (mtval >> 0) & ((1U << 7) - 1);
+		LOG_TARGET_DEBUG(target, "mtval=0x%" PRIx64 " opcode=0x%" PRIx32, mtval, opcode);
+		/*
+			These floating point instruction faults are handled in the idf _panic_handler and returned
+			without terminating the program.
+			Therefore, printing the exception cause here could provide incorrect information to users.
+		*/
+		if (opcode == ESP_RISCV_LOAD_FP || opcode == ESP_RISCV_STORE_FP || opcode == ESP_RISCV_OP_FP)
+			return;
+	}
+
+	LOG_TARGET_INFO(target, "Halt cause (%d) - (%s)", (int)ESP_RISCV_EXCEPTION_CAUSE(mcause),
+		esp_riscv_get_exception_reason(mcause));
 }
 
 static bool esp_riscv_is_wp_set_by_program(struct target *target)
@@ -241,6 +265,7 @@ int esp_riscv_examine(struct target *target)
 		{ esp_riscv_fprs, ARRAY_SIZE(esp_riscv_fprs), false },
 		{ esp_riscv_csrs, ARRAY_SIZE(esp_riscv_csrs), true },
 		{ esp_riscv_ro_csrs, ARRAY_SIZE(esp_riscv_ro_csrs), false },
+		{ esp_riscv->existent_ro_csrs, esp_riscv->existent_ro_csr_size, false }, /* chip specific RO CSRs */
 		{ esp_riscv->existent_csrs, esp_riscv->existent_csr_size, true } /* chip specific CSRs */
 	};
 
@@ -295,9 +320,6 @@ int esp_riscv_poll(struct target *target)
 			if (res != ERROR_OK)
 				LOG_WARNING("Failed to do rtos-specific cleanup (%d)", res);
 		}
-
-		/* clear previous apptrace ctrl_addr to avoid invalid tracing control block usage in the long run. */
-		esp_riscv->apptrace.ctrl_addr = 0;
 		esp_riscv->was_reset = false;
 	}
 
@@ -325,7 +347,25 @@ int esp_riscv_semihosting(struct target *target)
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
 	struct semihosting *semihosting = target->semihosting;
 
-	LOG_DEBUG("op:(%x) param: (%" PRIx64 ")", semihosting->op, semihosting->param);
+	/*
+		If a bp/wp set request comes from Core1, the other cores may continue running.
+		We need to ensure that all harts are in a halted state.
+	*/
+	if (target->smp && (semihosting->op == ESP_SEMIHOSTING_SYS_BREAKPOINT_SET ||
+		semihosting->op == ESP_SEMIHOSTING_SYS_WATCHPOINT_SET)) {
+		struct target_list *head;
+		foreach_smp_target(head, target->smp_targets) {
+			struct target *curr = head->target;
+			if (curr->state != TARGET_HALTED) {
+				LOG_TARGET_DEBUG(curr, "Target must be in halted state. Try to halt it");
+				res = riscv_halt(curr);
+				if (res != ERROR_OK)
+					return res;
+				/* Here all halts are in the halted state. Resume-all will be handled in riscv_semihosting() return */
+				break;
+			}
+		}
+	}
 
 	switch (semihosting->op) {
 	case ESP_SEMIHOSTING_SYS_APPTRACE_INIT:
@@ -355,7 +395,7 @@ int esp_riscv_semihosting(struct target *target)
 			return ERROR_FAIL;
 		}
 		int set = semihosting_get_field(target,
-				ESP_RISCV_SET_WATCHPOINT_ARG_SET,
+				ESP_RISCV_SET_BREAKPOINT_ARG_SET,
 				fields);
 		if (set) {
 			if (esp_riscv->target_bp_addr[id]) {
@@ -454,7 +494,7 @@ static int esp_riscv_debug_stubs_info_init(struct target *target,
 {
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
 
-	LOG_INFO("%s: Detected debug stubs @ " TARGET_ADDR_FMT, target_name(target), vec_addr);
+	LOG_TARGET_INFO(target, "Detected debug stubs entry @ " TARGET_ADDR_FMT, vec_addr);
 
 	memset(&esp_riscv->esp.dbg_stubs, 0, sizeof(esp_riscv->esp.dbg_stubs));
 
@@ -466,19 +506,17 @@ static int esp_riscv_debug_stubs_info_init(struct target *target,
 		return ERROR_OK;
 
 	/* read debug stubs descriptor */
-	ESP_RISCV_DBGSTUBS_UPDATE_DATA_ENTRY(esp_riscv->esp.dbg_stubs.entries[ESP_DBG_STUB_DESC]);
-	res =
-		target_read_buffer(target, esp_riscv->esp.dbg_stubs.entries[ESP_DBG_STUB_DESC],
-		sizeof(struct esp_dbg_stubs_desc),
-		(uint8_t *)&esp_riscv->esp.dbg_stubs.desc);
+	ESP_RISCV_DBGSTUBS_UPDATE_DATA_ENTRY(esp_riscv->esp.dbg_stubs.entries[ESP_DBG_STUB_CONTROL_DATA]);
+	res = target_read_buffer(target, esp_riscv->esp.dbg_stubs.entries[ESP_DBG_STUB_CONTROL_DATA],
+		sizeof(struct esp_dbg_stubs_ctl_data), (uint8_t *)&esp_riscv->esp.dbg_stubs.ctl_data);
 	if (res != ERROR_OK) {
-		LOG_ERROR("Failed to read debug stubs descriptor (%d)!", res);
+		LOG_TARGET_ERROR(target, "Failed to read debug stubs descriptor (%d)!", res);
 		return res;
 	}
-	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.desc.tramp_addr);
-	ESP_RISCV_DBGSTUBS_UPDATE_DATA_ENTRY(esp_riscv->esp.dbg_stubs.desc.min_stack_addr);
-	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.desc.data_alloc);
-	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.desc.data_free);
+	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.ctl_data.tramp_addr);
+	ESP_RISCV_DBGSTUBS_UPDATE_DATA_ENTRY(esp_riscv->esp.dbg_stubs.ctl_data.min_stack_addr);
+	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.ctl_data.data_alloc);
+	ESP_RISCV_DBGSTUBS_UPDATE_CODE_ENTRY(esp_riscv->esp.dbg_stubs.ctl_data.data_free);
 
 	return ERROR_OK;
 }
@@ -554,6 +592,16 @@ int esp_riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_watc
 int esp_riscv_resume(struct target *target, int current, target_addr_t address,
 		int handle_breakpoints, int debug_execution)
 {
+	/* On Riscv targets we change gdb service target only for gdb fileio requests
+	 * After getting the fileio response it is ok to switch it to the default target which is core0
+	 * Resume request is sent in the gdb_fileio_response_packet() after fileio command processed
+	*/
+	if (target->smp && target->gdb_service) {
+		struct target_list *head;
+		head = list_first_entry(target->smp_targets, struct target_list, lh);
+		target->gdb_service->target = head->target;
+	}
+
 	/* If the target stopped due to breakpoint/watchpoint set by program,
 	 * we need to handle_breakpoints to make single step
 	 */
@@ -566,13 +614,16 @@ int esp_riscv_resume(struct target *target, int current, target_addr_t address,
 			handle_breakpoints = true;
 	}
 
+	if (!(target->debug_reason == DBG_REASON_BREAKPOINT || target->debug_reason == DBG_REASON_WATCHPOINT))
+		handle_breakpoints = false;
+
 	return riscv_target_resume(target, current, address, handle_breakpoints, debug_execution);
 }
 
 static int esp_riscv_on_halt(struct target *target)
 {
 	riscv_reg_t reg_value;
-	if (riscv_get_register(target, &reg_value, GDB_REGNO_PC) == ERROR_OK)
+	if (riscv_get_register(target, &reg_value, GDB_REGNO_DPC) == ERROR_OK)
 		LOG_TARGET_INFO(target, "Target halted, PC=0x%08" PRIX64 ", debug_reason=%08x",
 			reg_value, target->debug_reason);
 	esp_riscv_print_exception_reason(target);
@@ -964,6 +1015,29 @@ void esp_riscv_deinit_target(struct target *target)
 	free(esp_riscv->target_wp_addr);
 
 	riscv_target.deinit_target(target);
+}
+
+int esp_riscv_assert_reset(struct target *target)
+{
+	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
+	/* clear previous apptrace ctrl_addr to avoid invalid tracing control block usage during/after reset */
+	esp_riscv->apptrace.ctrl_addr = 0;
+	return riscv_assert_reset(target);
+}
+
+int esp_riscv_get_gdb_reg_list_noread(struct target *target,
+		struct reg **reg_list[], int *reg_list_size,
+		enum target_register_class reg_class)
+{
+	if (target->state == TARGET_HALTED) {
+		return riscv_get_gdb_reg_list(target, reg_list, reg_list_size, reg_class);
+	} else if (target->state == TARGET_RUNNING) {
+		/* GDB can send 'g' packet when target is running. This is unexpected behavior explained in the OCD-749 */
+		return riscv_get_gdb_reg_list_noread(target, reg_list, reg_list_size, reg_class);
+	}
+
+	LOG_TARGET_ERROR(target, "Unexpected target state! (%d)", target->state);
+	return ERROR_FAIL;
 }
 
 COMMAND_HANDLER(esp_riscv_halted_command)

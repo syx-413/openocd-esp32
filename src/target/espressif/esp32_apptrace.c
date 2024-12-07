@@ -1066,6 +1066,14 @@ static int esp32_apptrace_poll(void *priv)
 		return ERROR_FAIL;
 	}
 
+	/* Check if re-initialization is needed due to the target resetting between data transfers. */
+	if (ctx->hw->apptrace_is_inited) {
+		for (unsigned int i = 0; i < ctx->cores_num; i++) {
+			if (!ctx->hw->apptrace_is_inited(ctx->cpus[i]))
+				return ERROR_WAIT;
+		}
+	}
+
 	/*  Check for connection is alive.For some reason target and therefore host_connected flag
 	 *  might have been reset */
 	res = esp32_apptrace_check_connection(ctx);
@@ -2061,6 +2069,15 @@ static int esp_gcov_feof(struct target *target,
 	return ERROR_OK;
 }
 
+static const char *apptrace_file_cmd_to_str(const uint8_t cmd)
+{
+	static const char *const commands[] = {"FOPEN", "FCLOSE", "FWRITE", "FREAD", "FSEEK", "FTELL", "FSTOP", "FEOF"};
+
+	if (cmd > ESP_APPTRACE_FILE_CMD_FEOF)
+		return "<unknown>";
+	return commands[cmd];
+}
+
 /*TODO: support for multi-block data transfers */
 static int esp_gcov_process_data(struct esp32_apptrace_cmd_ctx *ctx,
 	unsigned int core_id,
@@ -2072,14 +2089,14 @@ static int esp_gcov_process_data(struct esp32_apptrace_cmd_ctx *ctx,
 	uint8_t *resp;
 	uint32_t resp_len = 0;
 
-	LOG_DEBUG("Got block %d bytes [%x %x]", data_len, data[0], data[1]);
+	LOG_TARGET_DEBUG(ctx->cpus[core_id], "Got block %d bytes [%x %x]", data_len, data[0], data[1]);
 
 	if (data_len < 1) {
 		LOG_ERROR("Too small data length %d!", data_len);
 		return ERROR_FAIL;
 	}
 
-	LOG_DEBUG("Apptrace FCMD: 0x%x", *data);
+	LOG_TARGET_DEBUG(ctx->cpus[core_id], "Apptrace FCMD=0x%x (%s)", *data, apptrace_file_cmd_to_str(*data));
 
 	switch (*data) {
 	case ESP_APPTRACE_FILE_CMD_FOPEN:
@@ -2107,7 +2124,7 @@ static int esp_gcov_process_data(struct esp32_apptrace_cmd_ctx *ctx,
 		ret = esp_gcov_feof(ctx->cpus[core_id], cmd_data, data + 1, data_len - 1, &resp, &resp_len);
 		break;
 	default:
-		LOG_ERROR("Invalid FCMD 0x%x!", *data);
+		LOG_TARGET_ERROR(ctx->cpus[core_id], "Invalid FCMD 0x%x!", *data);
 		ret = ERROR_FAIL;
 	}
 	if (ret != ERROR_OK)
@@ -2293,7 +2310,7 @@ COMMAND_HANDLER(esp32_cmd_gcov)
 			return res;
 		}
 		struct esp_dbg_stubs *dbg_stubs = get_stubs_from_target(&run_target);
-		if (!dbg_stubs || dbg_stubs->entries_count < 1 || dbg_stubs->desc.data_alloc == 0) {
+		if (!dbg_stubs || dbg_stubs->entries_count < 1 || dbg_stubs->ctl_data.data_alloc == 0) {
 			command_print(CMD, "No dbg stubs found!");
 			esp_gcov_cmd_cleanup(&s_at_cmd_ctx);
 			return ERROR_FAIL;
@@ -2305,7 +2322,7 @@ COMMAND_HANDLER(esp32_cmd_gcov)
 			esp_gcov_cmd_cleanup(&s_at_cmd_ctx);
 			return ERROR_FAIL;
 		}
-		stub_capabilites = dbg_stubs->entries[ESP_DBG_STUB_CAPABILITIES];
+		stub_capabilites = dbg_stubs->entries[ESP_DBG_STUB_ENTRY_CAPABILITIES];
 		gcov_idf_has_thread = stub_capabilites & ESP_DBG_STUB_CAP_GCOV_THREAD;
 		LOG_DEBUG("STUB_CAP = 0x%x", stub_capabilites);
 		memset(&run, 0, sizeof(run));
@@ -2315,13 +2332,13 @@ COMMAND_HANDLER(esp32_cmd_gcov)
 			run.usr_func_arg = &s_at_cmd_ctx;
 			run.usr_func = esp_gcov_poll;
 		}
-		run.on_board.min_stack_addr = dbg_stubs->desc.min_stack_addr;
+		run.on_board.min_stack_addr = dbg_stubs->ctl_data.min_stack_addr;
 		run.on_board.min_stack_size = ESP_DBG_STUBS_STACK_MIN_SIZE;
-		run.on_board.code_buf_addr = dbg_stubs->desc.tramp_addr;
+		run.on_board.code_buf_addr = dbg_stubs->ctl_data.tramp_addr;
 		run.on_board.code_buf_size = ESP_DBG_STUBS_CODE_BUF_SIZE;
 		/* this function works for SMP and non-SMP targets
 		 * set num_args to 1 in order to read return code coming with "a2" reg */
-		esp_xtensa_smp_run_onboard_func(run_target, &run, func_addr, 1);
+		run.hw->run_onboard_func(run_target, &run, func_addr, 1);
 		LOG_DEBUG("FUNC RET = 0x%" PRIx32, run.ret_code);
 		if (run.ret_code == ERROR_OK && gcov_idf_has_thread) {
 			res = target_resume(target, 1, 0, 1, 0);

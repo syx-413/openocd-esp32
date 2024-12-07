@@ -245,7 +245,7 @@ static int svf_last_printed_percentage = -1;
 #define SVF_BUF_LOG(_lvl, _buf, _nbits, _desc)							\
 	svf_hexbuf_print(LOG_LVL_##_lvl,  __FILE__, __LINE__, __func__, _buf, _nbits, _desc)
 
-static void svf_hexbuf_print(int dbg_lvl, const char *file, unsigned line,
+static void svf_hexbuf_print(int dbg_lvl, const char *file, unsigned int line,
 							 const char *function, const uint8_t *buf,
 							 int bit_len, const char *desc)
 {
@@ -316,7 +316,7 @@ static void svf_free_xxd_para(struct svf_xxr_para *para)
 int svf_add_statemove(tap_state_t state_to)
 {
 	tap_state_t state_from = cmd_queue_cur_state;
-	unsigned index_var;
+	unsigned int index_var;
 
 	/* when resetting, be paranoid and ignore current state */
 	if (state_to == TAP_RESET) {
@@ -932,7 +932,7 @@ static int svf_check_tdo(void)
 		index_var = svf_check_tdo_para[i].buffer_offset;
 		len = svf_check_tdo_para[i].bit_len;
 		if ((svf_check_tdo_para[i].enabled)
-				&& buf_cmp_mask(&svf_tdi_buffer[index_var], &svf_tdo_buffer[index_var],
+				&& !buf_eq_mask(&svf_tdi_buffer[index_var], &svf_tdo_buffer[index_var],
 				&svf_mask_buffer[index_var], len)) {
 			LOG_ERROR("tdo check error at line %d",
 				svf_check_tdo_para[i].line_num);

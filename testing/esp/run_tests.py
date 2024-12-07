@@ -8,6 +8,7 @@ import unittest
 import tempfile
 import serial
 import threading
+import time
 import xmlrunner
 import cProfile, pstats
 import debug_backend as dbg
@@ -114,6 +115,22 @@ BOARD_TCL_CONFIG = {
         'chip_name' : 'esp32c6',
         'target_triple' : 'riscv32-esp-elf'
     },
+    'esp32c61-ftdi' :  {
+        'files' : [
+            os.path.join('board', 'esp32c61-ftdi.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32c61',
+        'target_triple' : 'riscv32-esp-elf'
+    },
+    'esp32c61-builtin' :  {
+        'files' : [
+            os.path.join('board', 'esp32c61-builtin.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32c61',
+        'target_triple' : 'riscv32-esp-elf'
+    },
     'esp32h2-ftdi' :  {
         'files' : [
             os.path.join('board', 'esp32h2-ftdi.cfg')
@@ -128,6 +145,22 @@ BOARD_TCL_CONFIG = {
         ],
         'commands' : [],
         'chip_name' : 'esp32h2',
+        'target_triple' : 'riscv32-esp-elf'
+    },
+    'esp32p4-ftdi' :  {
+        'files' : [
+            os.path.join('board', 'esp32p4-ftdi.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32p4',
+        'target_triple' : 'riscv32-esp-elf'
+    },
+    'esp32p4-builtin' :  {
+        'files' : [
+            os.path.join('board', 'esp32p4-builtin.cfg')
+        ],
+        'commands' : [],
+        'chip_name' : 'esp32p4',
         'target_triple' : 'riscv32-esp-elf'
     },
     'esp32s3-ftdi' :  {
@@ -348,36 +381,31 @@ def main():
     # start debugger, ideally we should run all tests w/o restarting it
     dbg_start(args.toolchain, args.oocd, args.oocd_tcl, board_tcl['files'], board_tcl['commands'],
                         args.debug_oocd, board_tcl['chip_name'], board_tcl['target_triple'],
-                        log_lev, ch, fh, args.gdb_log_file)
+                        log_lev, ch, fh, args.gdb_log_folder)
     res = None
     try:
         # run tests from the same directory this file is
         loader = unittest.TestLoader()
         loader.suiteClass = debug_backend_tests.DebuggerTestsBunch
         # load tests by patterns
-        if not isinstance(args.pattern, list):
-            tests_patterns = [args.pattern, ]
-        else:
-            tests_patterns = args.pattern
+        if not args.pattern:
+            args.pattern = ['test_*']
         suite = None
-        for pattern in tests_patterns:
+        for pattern in args.pattern:
             pattern_suite = load_tests_by_pattern(loader, os.path.dirname(__file__), pattern)
             if suite:
                 suite.addTest(pattern_suite)
             else:
                 suite = pattern_suite
         # exclude tests by patterns
-        if not isinstance(args.exclude, list):
-            tests_exclude = [args.exclude, ]
-        else:
-            tests_exclude = args.exclude
-        suite = exclude_tests_by_patterns(suite, tests_exclude)
+        if args.exclude:
+            suite = exclude_tests_by_patterns(suite, args.exclude)
         # setup loggers in test modules
         for m in suite.modules:
             setup_logger(suite.modules[m].get_logger(), ch, fh, log_lev)
         suite.load_app_bins = not args.no_load
         global _oocd_inst, _gdb_inst
-        arg_list = [args.debug_oocd, log_lev, args.gdb_log_file, ch, fh]
+        arg_list = [args.debug_oocd, log_lev, args.gdb_log_folder, ch, fh]
         suite.config_tests(_oocd_inst, _gdb_inst, args.toolchain, board_uart_reader, args.serial_port, arg_list)
         # RUN TESTS
         res = test_runner.run(suite)
@@ -387,13 +415,24 @@ def main():
             print("===========================================")
             # restart debugger
             dbg_stop()
+            time.sleep(1)
             dbg_start(args.toolchain, args.oocd, args.oocd_tcl, board_tcl['files'], board_tcl['commands'],
-                                args.debug_oocd, board_tcl['chip_name'], log_lev, ch, fh)
+                                args.debug_oocd, board_tcl['chip_name'], board_tcl['target_triple'],
+                                log_lev, ch, fh, args.gdb_log_folder)
             err_suite = debug_backend_tests.DebuggerTestsBunch()
-            for e in res.errors:
-                err_suite.addTest(e[0])
-            for f in res.failures:
-                err_suite.addTest(f[0])
+
+            ids = [x[0].id() for x in res.errors + res.failures]
+            for t in suite._tests:
+                if t.id() in ids:
+                    err_suite.addTest(t)
+            err_suite.load_app_bins = not args.no_load
+            arg_list = [args.debug_oocd, log_lev, args.gdb_log_folder, ch, fh]
+            err_suite.config_tests(_oocd_inst, _gdb_inst, args.toolchain, board_uart_reader, args.serial_port, arg_list)
+
+            # to output new report instead of overwriting previous one
+            if args.test_runner == 'x':
+                test_runner.outsuffix += "_retry"
+
             res = test_runner.run(err_suite)
     except:
         traceback.print_exc()
@@ -406,8 +445,15 @@ def main():
     if not res or not res.wasSuccessful():
         sys.exit(-1)
 
+class ExtendAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        items = getattr(namespace, self.dest) or []
+        items.extend(values)
+        setattr(namespace, self.dest, items)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='run_tests.py - Run auto-tests', prog='run_tests')
+    parser.register('action', 'extend', ExtendAction)
 
     parser.add_argument('--toolchain', '-t',
                         help='Toolchain prefix',
@@ -431,11 +477,11 @@ if __name__ == '__main__':
     parser.add_argument('--pattern', '-p', nargs='*',
                         help="""Pattern of test cases to run. Format: <module>[.<test_case>[.<test_method>]].
                                 User can specify several strings separated by space. Wildcards (*) are supported in <module> and <test_case> parts""",
-                        default='test_*')
+                        action='extend', default=[])
     parser.add_argument('--exclude', '-e', nargs='*',
                         help="""Pattern of test cases to exclude. Format: <module>[.<test_case>[.<test_method>]].
                                 User can specify several strings separated by space. Wildcards (*) are supported in <module> and <test_case> parts""",
-                        default='')
+                        action='extend', default=[])
     parser.add_argument('--no-load', '-n',
                         help='Do not load test app binaries',
                         action='store_true', default=False)
@@ -453,8 +499,8 @@ if __name__ == '__main__':
                         type=int, default=2)
     parser.add_argument('--log-file', '-l',
                         help='Path to log file. Use "stdout" to log to console.')
-    parser.add_argument('--gdb-log-file', '-gl',
-                        help='Path to GDB log file.', default='')
+    parser.add_argument('--gdb-log-folder', '-gl',
+                        help='Path to folder for GDB log files.', default='')
     parser.add_argument('--serial-port', '-u',
                         help='Name of serial port to grab board\'s UART output.')
     parser.add_argument('--log-uart', '-lu',

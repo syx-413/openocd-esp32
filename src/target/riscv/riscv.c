@@ -3067,6 +3067,11 @@ static int riscv_poll_hart(struct target *target, enum riscv_next_action *next_a
 						case SEMIHOSTING_WAITING:
 							/* This hart should remain halted. */
 							*next_action = RPH_REMAIN_HALTED;
+							/* ESPRESSIF */
+							if (target->smp && target->gdb_service) {
+								target->gdb_service->target = target;
+								target_call_event_callbacks(target, TARGET_EVENT_HALTED);
+							}
 							break;
 						case SEMIHOSTING_HANDLED:
 							/* This hart should be resumed, along with any other
@@ -3077,9 +3082,6 @@ static int riscv_poll_hart(struct target *target, enum riscv_next_action *next_a
 							return retval;
 					}
 				}
-
-				/* TODO: Espressif: replace with handle_became_halted event. */
-				r->on_halt(target);
 
 				if (r->handle_became_halted &&
 						r->handle_became_halted(target, previous_riscv_state) != ERROR_OK)
@@ -4283,8 +4285,7 @@ COMMAND_HANDLER(handle_repeat_read)
 	}
 	int result = r->read_memory(target, address, size, count, buffer, 0);
 	if (result == ERROR_OK) {
-		target_handle_md_output(cmd, target, address, size, count, buffer,
-			false);
+		target_handle_md_output(cmd, target, address, size, count, buffer);
 	}
 	free(buffer);
 	return result;
@@ -5051,7 +5052,6 @@ static int riscv_step_rtos_hart(struct target *target)
 	r->on_step(target);
 	if (r->step_current_hart(target) != ERROR_OK)
 		return ERROR_FAIL;
-	r->on_halt(target); /* ESPRESSIF */
 	if (target->state != TARGET_HALTED) {
 		LOG_TARGET_ERROR(target, "Hart was not halted after single step!");
 		return ERROR_FAIL;

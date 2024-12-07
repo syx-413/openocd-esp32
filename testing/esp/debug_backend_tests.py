@@ -119,9 +119,9 @@ class GDBUtils:
                             extended_remote_mode='127.0.0.1:%d' % dbg.Oocd.GDB_PORT,
                             log_level=log_level,
                             log_stream_handler=log_stream,
-                            log_file_handler=log_file)
-        if len(gdb_log):
-            _gdb_inst.gdb_set('remotelogfile', gdb_log)
+                            log_file_handler=log_file,
+                            gdb_log_folder=gdb_log)
+
         if debug_oocd > 2:
             _gdb_inst.tmo_scale_factor = 5
         else:
@@ -133,13 +133,13 @@ class GDBUtils:
     def create_gdb_and_reconnect(self):
         debug_oocd = self.args[0]
         log_lev = self.args[1]
-        gdb_log_file = self.args[2]
+        gdb_log_folder = self.args[2]
         ch = self.args[3]
         fh = self.args[4]
         connect_tmo = 15
 
         _gdb_inst = self.create_gdb(testee_info.chip, self.toolchain[:-1], self.toolchain, log_lev,
-                                        ch, fh, gdb_log_file, debug_oocd)
+                                        ch, fh, gdb_log_folder, debug_oocd)
         _gdb_inst.connect(tmo=connect_tmo)
         _gdb_inst.exec_file_set(self.test_app_cfg.build_app_elf_path())
         self.gdb = _gdb_inst
@@ -178,7 +178,7 @@ def skip_for_chip_and_ver(ver_str, chips_to_skip):
             v1 = repr(testee_info.idf_ver).split('.')
             v2 = ver_str.split('.')
             # check major and minor numbers only.
-            if v1[0] == v2[0] and v1[1] == v2[1]:
+            if v1 == v2 or (v1[0] == v2[0] and v1[1] == v2[1]):
                 skip = True
     return unittest.skipIf(skip, "for the '%s' for the IDF_VER='%s'" % (id, testee_info.idf_ver))
 
@@ -242,7 +242,7 @@ class DebuggerTestAppConfig:
         self.build_dir = build_dir
         # App name
         self.app_name = app_name
-        # App binary offeset in flash
+        # App binary offset in flash
         self.app_off = app_off
         # Path for bootloader binary, relative $test_apps_dir/$app_name/$bin_dir
         self.bld_path = None
@@ -267,6 +267,10 @@ class DebuggerTestAppConfig:
         self.startup_script = ''
         # Execute the script only.
         self.only_startup = True
+        # All binaries merged into single file
+        self.merged_bin = False
+        # Merged binary offset in flash
+        self.merged_bin_off = 0
 
     def __repr__(self):
         return '%s/%x-%s/%x-%s/%x-%s' % (self.bin_dir, self.app_off, self.app_name, self.bld_off, self.bld_path, self.pt_off, self.pt_path)
@@ -357,7 +361,7 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
                 # load only if app bins are configured (used) for these tests
                 if self.load_app_bins and self._groupped_suites[app_cfg_id][0]:
                     try:
-                        self._load_app(self._groupped_suites[app_cfg_id][0])
+                        self._load_app(self._groupped_suites[app_cfg_id][0], not self._groupped_suites[app_cfg_id][0].merged_bin)
                     except:
                         get_logger().critical('Failed to load %s!', app_cfg_id)
                         for test in self._groupped_suites[app_cfg_id][1]:
@@ -412,15 +416,17 @@ class DebuggerTestsBunch(unittest.BaseTestSuite):
             else:
                 self._group_tests(test)
 
-    def _load_app(self, app_cfg):
+    def _load_app(self, app_cfg, use_flasher_args_json = True):
         """ Loads application binaries to target.
         """
         state,_ = self.gdb.get_target_state()
         if state != dbg.TARGET_STATE_STOPPED:
             self.gdb.exec_interrupt()
             self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 5)
-        # flash using 'flasher_args.json'
-        self.gdb.target_program_bins(app_cfg.build_bins_dir())
+        if use_flasher_args_json:
+            self.gdb.target_program_bins(app_cfg.build_bins_dir())
+        else:
+            self.gdb.target_program(app_cfg.build_app_bin_path(), app_cfg.merged_bin_off)
         self.gdb.target_reset()
 
 
@@ -535,7 +541,7 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         # TODO: chip dependent
         self.oocd.set_appimage_offset(app_flash_off)
         self.gdb.connect()
-        bp = self.gdb.add_bp(self.test_app_cfg.entry_point)
+        bp = self.gdb.add_bp(self.test_app_cfg.entry_point, hw=True)
         self.resume_exec()
         rsn = self.gdb.wait_target_state(dbg.TARGET_STATE_STOPPED, 10)
         # workarounds for strange debugger's behaviour

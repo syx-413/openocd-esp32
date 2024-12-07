@@ -1,22 +1,10 @@
-.add_gitlab_key_snippet: &add_gitlab_key_snippet |
-  command -v ssh-agent >/dev/null || exit 1
-  eval $(ssh-agent -s)
-  printf '%s\n' "${GITLAB_KEY}" | tr -d '\r' | ssh-add - > /dev/null
-  mkdir -p ~/.ssh && chmod 700 ~/.ssh
-  [[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config || true
-
-.add_gitlab_key:
-  script:
-    - *add_gitlab_key_snippet
-
-
 .submodules_mirror_update_snippet: &submodules_mirror_update_snippet |
   # Gitlab doesn't clean submodule contents
   git submodule foreach "git clean -d -x -f" || true
   # Use local mirror for submodules
-  git config submodule.tools/git2cl.url https://gitlab-ci-token:${BOT_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/git2cl.git
-  git config submodule.jimtcl.url https://gitlab-ci-token:${BOT_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/jimtcl.git
-  git config submodule.src/jtag/drivers/libjaylink.url https://gitlab-ci-token:${BOT_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/libjaylink.git
+  git config submodule.tools/git2cl.url https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/git2cl.git
+  git config submodule.jimtcl.url https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/jimtcl.git
+  git config submodule.src/jtag/drivers/libjaylink.url https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/libjaylink.git
   git submodule update --init
 
 .submodules_mirror_update:
@@ -43,32 +31,17 @@
   tar -C ${TEST_RUN_DIR} -x -m -f ${DIST_ART_DIR}/${ARCHIVE_NAME}
   export DIST_DIR=${PWD}/${TEST_RUN_DIR}/${DIST_INSTALLED_DIR}
   export PYTHONPATH=$PWD/${TEST_RUN_DIR}:$PWD/testing/esp/py_debug_backend
-  . $PWD/${TEST_RUN_DIR}/gen_ut_app/gcov_data/gcov_env.sh
   echo "CHIP_TEST_TOOLCHAIN: ${CHIP_TEST_TOOLCHAIN}"
-  testing/esp/run_tests.py -o $DIST_DIR/bin/openocd -s $DIST_DIR/share/openocd/scripts -a $PWD/$TEST_RUN_DIR -t ${CHIP_TEST_TOOLCHAIN}-elf- -d 4 -l $PWD/$TEST_RUN_DIR/debug_backend_tests.log -to $PWD/$TEST_RUN_DIR/results $TEST_RUN_EXTRA_OPTS -c "${OOCD_CMDS}"
+  testing/esp/run_tests.py -o $DIST_DIR/bin/openocd -s $DIST_DIR/share/openocd/scripts -a $PWD/$TEST_RUN_DIR -t ${CHIP_TEST_TOOLCHAIN}-elf- -d 4 -l $PWD/$TEST_RUN_DIR/debug_backend_tests.log -tr x -to $PWD/$TEST_RUN_DIR/results $TEST_RUN_EXTRA_OPTS -c "${OOCD_CMDS}"
 
 .run_tests_linux:
   script:
     - *run_tests_linux_snippet
 
 .copy_nuttx_files_snippet: &copy_nuttx_files_snippet |
-  ./testing/esp/test_apps/nuttx/mkjson.sh $TEST_RUN_DIR $NUTTX_APP_NAME $CHIP
-  mv nuttx.bin $TEST_RUN_DIR/$NUTTX_APP_NAME/$NUTTX_APP_NAME.bin
+  mv nuttx.merged.bin $TEST_RUN_DIR/$NUTTX_APP_NAME/$NUTTX_APP_NAME.bin
   mv nuttx $TEST_RUN_DIR/$NUTTX_APP_NAME/$NUTTX_APP_NAME.elf
-  mv bootloader.bin partition-table.bin $TEST_RUN_DIR/$NUTTX_APP_NAME/
 
 .copy_nuttx_files:
   script:
     - *copy_nuttx_files_snippet
-
-
-.run_tests_nuttx_snippet: &run_tests_nuttx_snippet |
-  ARCHIVE_NAME=$(cat ${DIST_ART_DIR}/dist_name_${PLATFORM_NAME})
-  tar -C ${TEST_RUN_DIR} -x -f ${DIST_ART_DIR}/${ARCHIVE_NAME}
-  export DIST_DIR=${PWD}/${TEST_RUN_DIR}/${DIST_INSTALLED_DIR}
-  export PYTHONPATH=$PWD/${TEST_RUN_DIR}:$PWD/testing/esp/py_debug_backend
-  testing/esp/run_tests.py -o $DIST_DIR/bin/openocd -s $DIST_DIR/share/openocd/scripts -a $PWD/$TEST_RUN_DIR -t ${CHIP_TEST_TOOLCHAIN}-elf- -d 4 -l $PWD/$TEST_RUN_DIR/debug_backend_tests.log $TEST_RUN_EXTRA_OPTS -c "${OOCD_CMDS}"
-
-.run_tests_nuttx:
-  script:
-    - *run_tests_nuttx_snippet

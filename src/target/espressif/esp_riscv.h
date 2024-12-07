@@ -36,6 +36,8 @@ struct esp_riscv_common {
 	bool was_reset;
 	const char **existent_csrs;
 	size_t existent_csr_size;
+	const char **existent_ro_csrs;
+	size_t existent_ro_csr_size;
 	bool (*is_iram_address)(target_addr_t addr);
 	bool (*is_dram_address)(target_addr_t addr);
 };
@@ -50,6 +52,8 @@ static inline int esp_riscv_on_reset(struct target *target)
 	LOG_TARGET_DEBUG(target, "on reset!");
 	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
 	esp_riscv->was_reset = true;
+	/* clear previous apptrace ctrl_addr to avoid invalid tracing control block usage during/after reset */
+	esp_riscv->apptrace.ctrl_addr = 0;
 	return ERROR_OK;
 }
 
@@ -105,6 +109,10 @@ int esp_riscv_core_halt(struct target *target);
 int esp_riscv_core_resume(struct target *target);
 int esp_riscv_core_ebreaks_enable(struct target *target);
 void esp_riscv_deinit_target(struct target *target);
+int esp_riscv_assert_reset(struct target *target);
+int esp_riscv_get_gdb_reg_list_noread(struct target *target,
+		struct reg **reg_list[], int *reg_list_size,
+		enum target_register_class reg_class);
 
 extern const struct command_registration esp_riscv_command_handlers[];
 

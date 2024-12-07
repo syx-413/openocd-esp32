@@ -46,7 +46,6 @@ static int riscv013_halt_prep(struct target *target);
 static int riscv013_halt_go(struct target *target);
 static int riscv013_resume_go(struct target *target);
 static int riscv013_step_current_hart(struct target *target);
-static int riscv013_on_halt(struct target *target); /* ESPRESSIF */
 static int riscv013_on_step(struct target *target);
 static int riscv013_resume_prep(struct target *target);
 static enum riscv_halt_reason riscv013_halt_reason(struct target *target);
@@ -794,6 +793,19 @@ static int dmstatus_read_timeout(struct target *target, uint32_t *dmstatus,
 			DM_DMSTATUS, 0, timeout_sec, false, true);
 	if (result != ERROR_OK)
 		return result;
+
+	/* ESPRESSIF */
+	if (*dmstatus == 0) {
+		uint32_t dmcontrol;
+		/* after unexpected resets on some targets, dmcontrol could be inactive. */
+		if (dm_read(target, &dmcontrol, DM_DMCONTROL) == ERROR_OK) {
+			if (!get_field(dmcontrol, DM_DMCONTROL_DMACTIVE)) {
+				LOG_TARGET_ERROR(target, "Debug Module is not active! dmcontrol=0x%" PRIx32, dmcontrol);
+				return dm_write(target, DM_DMCONTROL, DM_DMCONTROL_DMACTIVE);
+			}
+		}
+	}
+
 	int dmstatus_version = get_field(*dmstatus, DM_DMSTATUS_VERSION);
 	if (dmstatus_version != 2 && dmstatus_version != 3) {
 		LOG_ERROR("OpenOCD only supports Debug Module version 2 (0.13) and 3 (1.0), not "
@@ -2792,7 +2804,6 @@ static int init_target(struct command_context *cmd_ctx,
 	generic_info->get_hart_state = &riscv013_get_hart_state;
 	generic_info->resume_go = &riscv013_resume_go;
 	generic_info->step_current_hart = &riscv013_step_current_hart;
-	generic_info->on_halt = &riscv013_on_halt; /* ESPRESSIF */
 	generic_info->resume_prep = &riscv013_resume_prep;
 	generic_info->halt_prep = &riscv013_halt_prep;
 	generic_info->halt_go = &riscv013_halt_go;
@@ -5109,12 +5120,6 @@ static int riscv013_resume_prep(struct target *target)
 static int riscv013_on_step(struct target *target)
 {
 	return riscv013_on_step_or_resume(target, true);
-}
-
-/* ESPRESSIF */
-static int riscv013_on_halt(struct target *target)
-{
-	return ERROR_OK;
 }
 
 static enum riscv_halt_reason riscv013_halt_reason(struct target *target)

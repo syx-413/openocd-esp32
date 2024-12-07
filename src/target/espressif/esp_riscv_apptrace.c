@@ -41,6 +41,7 @@ static int esp_riscv_apptrace_buffs_write(struct target *target,
 	uint32_t block_id,
 	bool ack,
 	bool data);
+static bool esp_riscv_apptrace_is_inited(struct target *target);
 
 struct esp32_apptrace_hw esp_riscv_apptrace_hw = {
 	.max_block_id = RISCV_APPTRACE_BLOCK_ID_MAX,
@@ -53,7 +54,8 @@ struct esp32_apptrace_hw esp_riscv_apptrace_hw = {
 	.usr_block_max_size_get = esp_riscv_apptrace_usr_block_max_size_get,
 	.buffs_write = esp_riscv_apptrace_buffs_write,
 	.leave_trace_crit_section_start = NULL,
-	.leave_trace_crit_section_stop = NULL
+	.leave_trace_crit_section_stop = NULL,
+	.apptrace_is_inited = esp_riscv_apptrace_is_inited
 };
 
 int esp_riscv_apptrace_info_init(struct target *target, target_addr_t ctrl_addr, target_addr_t *old_ctrl_addr)
@@ -63,7 +65,7 @@ int esp_riscv_apptrace_info_init(struct target *target, target_addr_t ctrl_addr,
 
 	int res = target_read_u32(target, ctrl_addr + sizeof(struct esp_apptrace_riscv_ctrl_regs), &mem_cfg_addr);
 	if (res != ERROR_OK) {
-		LOG_ERROR("Failed to read control block @ "TARGET_ADDR_FMT "!", ctrl_addr);
+		LOG_TARGET_ERROR(target, "Failed to read control block @ " TARGET_ADDR_FMT "!", ctrl_addr);
 		return res;
 	}
 
@@ -71,17 +73,17 @@ int esp_riscv_apptrace_info_init(struct target *target, target_addr_t ctrl_addr,
 	   For some targets (e.g. esp32p4), reading invalid address will be an error */
 	if (esp_riscv->is_dram_address(mem_cfg_addr)) {
 		for (int i = 0; i < 2; i++) {
-			LOG_DEBUG("memory block %d start @ 0x%x!", i, mem_cfg_addr);
+			LOG_TARGET_DEBUG(target, "memory block %d start @ 0x%x!", i, mem_cfg_addr);
 			res = target_read_u32(target, mem_cfg_addr, &esp_riscv->apptrace.mem_blocks[i].start);
 			if (res != ERROR_OK) {
-				LOG_ERROR("Failed to read memory blocks config @ 0x%x!", mem_cfg_addr);
+				LOG_TARGET_ERROR(target, "Failed to read memory blocks config @ 0x%x!", mem_cfg_addr);
 				return res;
 			}
 			mem_cfg_addr += sizeof(uint32_t);
-			LOG_DEBUG("memory block %d size @ 0x%x!", i, mem_cfg_addr);
+			LOG_TARGET_DEBUG(target, "memory block %d size @ 0x%x!", i, mem_cfg_addr);
 			res = target_read_u32(target, mem_cfg_addr, &esp_riscv->apptrace.mem_blocks[i].sz);
 			if (res != ERROR_OK) {
-				LOG_ERROR("Failed to read memory blocks config @ 0x%x!", mem_cfg_addr);
+				LOG_TARGET_ERROR(target, "Failed to read memory blocks config @ 0x%x!", mem_cfg_addr);
 				return res;
 			}
 			mem_cfg_addr += sizeof(uint32_t);
@@ -89,7 +91,7 @@ int esp_riscv_apptrace_info_init(struct target *target, target_addr_t ctrl_addr,
 	}
 
 	/* TODO: add checks for memory blocks ranges */
-	LOG_DEBUG("Detected memory blocks: [0] %d bytes @ 0x%x, [1] %d bytes @ 0x%x",
+	LOG_TARGET_DEBUG(target, "Detected memory blocks: [0] %d bytes @ 0x%x, [1] %d bytes @ 0x%x",
 		esp_riscv->apptrace.mem_blocks[0].sz, esp_riscv->apptrace.mem_blocks[0].start,
 		esp_riscv->apptrace.mem_blocks[1].sz, esp_riscv->apptrace.mem_blocks[1].start);
 
@@ -197,4 +199,12 @@ static int esp_riscv_apptrace_buffs_write(struct target *target, uint32_t bufs_n
 			data);
 	}
 	return res;
+}
+
+static bool esp_riscv_apptrace_is_inited(struct target *target)
+{
+	struct esp_riscv_common *esp_riscv = target_to_esp_riscv(target);
+
+	/* during the reset cycle, we are clearing `ctrl_addr` to its reset state. */
+	return esp_riscv->apptrace.ctrl_addr ? true : false;
 }

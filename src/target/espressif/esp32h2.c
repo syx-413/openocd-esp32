@@ -161,6 +161,8 @@ static int esp32h2_target_create(struct target *target, Jim_Interp *interp)
 	esp_riscv->print_reset_reason = &esp32h2_print_reset_reason;
 	esp_riscv->existent_csrs = esp32h2_csrs;
 	esp_riscv->existent_csr_size = ARRAY_SIZE(esp32h2_csrs);
+	esp_riscv->existent_ro_csrs = NULL;
+	esp_riscv->existent_ro_csr_size = 0;
 	esp_riscv->is_dram_address = esp32h2_is_idram_address;
 	esp_riscv->is_iram_address = esp32h2_is_idram_address;
 
@@ -226,7 +228,7 @@ struct target_type esp32h2_target = {
 	.resume = esp_riscv_resume,
 	.step = riscv_openocd_step,
 
-	.assert_reset = riscv_assert_reset,
+	.assert_reset = esp_riscv_assert_reset,
 	.deassert_reset = riscv_deassert_reset,
 
 	.read_memory = esp_riscv_read_memory,
@@ -236,7 +238,7 @@ struct target_type esp32h2_target = {
 
 	.get_gdb_arch = riscv_get_gdb_arch,
 	.get_gdb_reg_list = riscv_get_gdb_reg_list,
-	.get_gdb_reg_list_noread = riscv_get_gdb_reg_list_noread,
+	.get_gdb_reg_list_noread = esp_riscv_get_gdb_reg_list_noread,
 
 	.add_breakpoint = esp_riscv_breakpoint_add,
 	.remove_breakpoint = esp_riscv_breakpoint_remove,

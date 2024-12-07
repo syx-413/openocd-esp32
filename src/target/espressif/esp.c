@@ -52,66 +52,47 @@ int esp_common_init(struct target *target, struct esp_common *esp,
 
 int esp_dbgstubs_table_read(struct target *target, struct esp_dbg_stubs *dbg_stubs)
 {
-	uint32_t table_size, table_start_id, desc_entry_id, gcov_entry_id;
-	uint32_t entries[ESP_DBG_STUB_ENTRY_MAX] = {0};
-	uint8_t entry_buff[sizeof(entries)] = {0}; /* to avoid endiannes issues */
+	uint8_t entry_buff[sizeof(uint32_t) * ESP_DBG_STUB_ENTRY_MAX] = {0}; /* to avoid endiannes issues */
 
 	LOG_TARGET_DEBUG(target, "Read debug stubs info %" PRIx32 " / %d", dbg_stubs->base, dbg_stubs->entries_count);
 
-	/* First of, read 2 entries to get magic num and table size */
-	int res = target_read_buffer(target, dbg_stubs->base, sizeof(uint32_t) * 2, entry_buff);
+	/* Read all entries */
+	int res = target_read_buffer(target, dbg_stubs->base, sizeof(entry_buff), entry_buff);
 	if (res != ERROR_OK) {
-		LOG_ERROR("%s: Failed to read first debug stub entry!", target_name(target));
+		LOG_TARGET_ERROR(target, "Failed to read first debug stub entry!");
 		return res;
 	}
-	entries[0] = target_buffer_get_u32(target, entry_buff);
-	entries[1] = target_buffer_get_u32(target, entry_buff + sizeof(uint32_t));
 
-	if (entries[0] != ESP_DBG_STUB_MAGIC_NUM_VAL) {
-		/* idf with the old table entry structure */
-		table_size = 2;
-		table_start_id = 0;
-		desc_entry_id = 0;
-		gcov_entry_id = 1;
-	} else {
-		table_size = entries[1];
-		table_start_id = ESP_DBG_STUB_TABLE_START;
-		desc_entry_id = ESP_DBG_STUB_TABLE_START;
-		gcov_entry_id = ESP_DBG_STUB_ENTRY_FIRST;
-
-		/* discard unsupported entries */
-		if (table_size < 2) {
-			LOG_ERROR("Invalid stub table entry size (%x)", table_size);
-			return ERROR_FAIL;
-		}
-		if (table_size > ESP_DBG_STUB_ENTRY_MAX)
-			table_size = ESP_DBG_STUB_ENTRY_MAX;
-
-		/* now read the remaining entries */
-		res = target_read_buffer(target, dbg_stubs->base + 2 * sizeof(uint32_t), sizeof(uint32_t) * table_size - 2,
-			entry_buff + sizeof(uint32_t) * 2);
-		if (res != ERROR_OK) {
-			LOG_TARGET_ERROR(target, "Failed to read debug stubs info!");
-			return res;
-		}
-		for (unsigned int i = 2; i < table_size; ++i)
-			entries[i] = target_buffer_get_u32(target, entry_buff + sizeof(uint32_t) * i);
-
-		dbg_stubs->entries[ESP_DBG_STUB_CAPABILITIES] = entries[ESP_DBG_STUB_CAPABILITIES];
+	dbg_stubs->entries[0] = target_buffer_get_u32(target, entry_buff);
+	if (dbg_stubs->entries[0] != ESP_DBG_STUB_MAGIC_NUM_VAL) {
+		LOG_TARGET_ERROR(target, "Invalid stub magic num (%" PRIx32 ")", dbg_stubs->entries[0]);
+		return ERROR_FAIL;
 	}
 
-	dbg_stubs->entries[ESP_DBG_STUB_DESC] = entries[desc_entry_id];
-	dbg_stubs->entries[ESP_DBG_STUB_ENTRY_GCOV] = entries[gcov_entry_id];
+	dbg_stubs->entries[1] = target_buffer_get_u32(target, entry_buff + sizeof(uint32_t));
+	uint32_t table_size = dbg_stubs->entries[1];
 
-	for (enum esp_dbg_stub_id i = ESP_DBG_STUB_DESC; i < ESP_DBG_STUB_ENTRY_MAX; i++) {
+	/* discard unsupported entries */
+	if (table_size < 2) {
+		LOG_ERROR("Invalid stub table entry size (%x)", table_size);
+		return ERROR_FAIL;
+	}
+	if (table_size > ESP_DBG_STUB_ENTRY_MAX)
+		table_size = ESP_DBG_STUB_ENTRY_MAX;
+
+	for (unsigned int i = 2; i < table_size; ++i)
+		dbg_stubs->entries[i] = target_buffer_get_u32(target, entry_buff + sizeof(uint32_t) * i);
+
+	for (enum esp_dbg_stub_id i = ESP_DBG_STUB_CONTROL_DATA; i < ESP_DBG_STUB_ENTRY_MAX; i++) {
 		LOG_DEBUG("Check dbg stub %d - %x", i, dbg_stubs->entries[i]);
 		if (dbg_stubs->entries[i]) {
 			LOG_DEBUG("New dbg stub %d at %x", dbg_stubs->entries_count, dbg_stubs->entries[i]);
 			dbg_stubs->entries_count++;
 		}
 	}
-	if (dbg_stubs->entries_count < table_size - table_start_id)
-		LOG_WARNING("Not full dbg stub table %d of %d", dbg_stubs->entries_count, table_size - table_start_id);
+	if (dbg_stubs->entries_count < table_size - ESP_DBG_STUB_CONTROL_DATA)
+		LOG_WARNING("Not full dbg stub table %d of %d", dbg_stubs->entries_count,
+			table_size - ESP_DBG_STUB_CONTROL_DATA);
 
 	return ERROR_OK;
 }
@@ -130,7 +111,7 @@ struct target *esp_common_get_halted_target(struct target *target, int32_t corei
 	return target;
 }
 
-void esp_common_dump_bp_slot(const char *caption, struct esp_flash_breakpoints *bps, size_t slot)
+static void esp_common_dump_bp_slot(const char *caption, struct esp_flash_breakpoints *bps, size_t slot)
 {
 	if (!LOG_LEVEL_IS(LOG_LVL_DEBUG))
 		return;
@@ -174,7 +155,7 @@ static int esp_common_flash_breakpoints_clear(struct target *target)
 	return ERROR_OK;
 }
 
-bool esp_common_any_pending_flash_breakpoint(struct esp_common *esp)
+static bool esp_common_any_pending_flash_breakpoint(struct esp_common *esp)
 {
 	for (uint32_t slot = 0; slot < ESP_FLASH_BREAKPOINTS_MAX_NUM; slot++) {
 		if (esp->flash_brps.brps[slot].status == ESP_BP_STAT_PEND)
@@ -183,7 +164,7 @@ bool esp_common_any_pending_flash_breakpoint(struct esp_common *esp)
 	return false;
 }
 
-bool esp_common_any_added_flash_breakpoint(struct esp_common *esp)
+static bool esp_common_any_added_flash_breakpoint(struct esp_common *esp)
 {
 	for (uint32_t slot = 0; slot < ESP_FLASH_BREAKPOINTS_MAX_NUM; slot++) {
 		if (esp->flash_brps.brps[slot].insn_sz > 0)
@@ -192,7 +173,7 @@ bool esp_common_any_added_flash_breakpoint(struct esp_common *esp)
 	return false;
 }
 
-void esp_common_flash_breakpoints_get_ready_to_remove(struct esp_common *esp)
+static void esp_common_flash_breakpoints_get_ready_to_remove(struct esp_common *esp)
 {
 	for (uint32_t slot = 0; slot < ESP_FLASH_BREAKPOINTS_MAX_NUM; slot++) {
 		if (esp->flash_brps.brps[slot].insn_sz > 0) {
@@ -287,7 +268,7 @@ int esp_common_flash_breakpoint_remove(struct target *target, struct esp_common 
 	return esp->flash_brps.ops->breakpoint_remove(target, &esp->flash_brps.brps[slot], 1);
 }
 
-int esp_common_process_lazy_flash_breakpoints(struct target *target)
+static int esp_common_process_lazy_flash_breakpoints(struct target *target)
 {
 	struct esp_common *esp = target_to_esp_common(target);
 	struct esp_flash_breakpoint *flash_bps = esp->flash_brps.brps;
@@ -346,7 +327,7 @@ int esp_common_process_lazy_flash_breakpoints(struct target *target)
 	return ret;
 }
 
-int esp_common_halt_target(struct target *target, enum target_state *old_state)
+static int esp_common_halt_target(struct target *target, enum target_state *old_state)
 {
 	*old_state = target->state;
 	if (target->state != TARGET_HALTED) {
@@ -400,7 +381,7 @@ int esp_common_handle_gdb_detach(struct target *target)
 	return ERROR_OK;
 }
 
-int esp_common_handle_flash_breakpoints(struct target *target)
+static int esp_common_handle_flash_breakpoints(struct target *target)
 {
 	struct esp_common *esp = target_to_esp_common(target);
 
@@ -488,7 +469,7 @@ int esp_common_read_pseudo_ex_reason(struct target *target)
 
 /* Generic commands for xtensa and riscv */
 
-int esp_common_gdb_detach_handler(struct target *target)
+static int esp_common_gdb_detach_handler(struct target *target)
 {
 	if (target->smp) {
 		struct target_list *head;
@@ -502,7 +483,7 @@ int esp_common_gdb_detach_handler(struct target *target)
 	return esp_common_handle_gdb_detach(target);
 }
 
-int esp_common_process_flash_breakpoints_handler(struct target *target)
+static int esp_common_process_flash_breakpoints_handler(struct target *target)
 {
 	if (target->smp) {
 		struct target_list *head;
@@ -516,7 +497,7 @@ int esp_common_process_flash_breakpoints_handler(struct target *target)
 	return esp_common_handle_flash_breakpoints(target);
 }
 
-int esp_common_disable_lazy_breakpoints_handler(struct target *target)
+static int esp_common_disable_lazy_breakpoints_handler(struct target *target)
 {
 	/* Before disabling, add/remove pending breakpoints */
 	int ret = esp_common_process_flash_breakpoints_handler(target);

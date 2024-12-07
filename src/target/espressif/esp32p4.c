@@ -11,6 +11,7 @@
 
 #include <helper/command.h>
 #include <helper/bits.h>
+#include <helper/align.h>
 #include <target/target.h>
 #include <target/target_type.h>
 #include <target/register.h>
@@ -43,6 +44,12 @@
 #define ESP32P4_CACHE_MAP_L2_CACHE              BIT(5)
 #define ESP32P4_CACHE_SYNC_INVALIDATE           BIT(0)
 #define ESP32P4_CACHE_SYNC_WRITEBACK            BIT(2)
+#define ESP32P4_CACHE_SYNC_DONE                 BIT(4)
+
+#define ESP32P4_CACHE_L1_LINE_SIZE              64
+
+#define ESP32P4_CACHE_MAP_L1_ICACHE (ESP32P4_CACHE_MAP_L1_ICACHE0 | ESP32P4_CACHE_MAP_L1_ICACHE1)
+#define ESP32P4_CACHE_MAP_ALL (ESP32P4_CACHE_MAP_L1_ICACHE | ESP32P4_CACHE_MAP_L1_DCACHE)
 
 #define ESP32P4_IRAM0_CACHEABLE_ADDRESS_LOW     0x4ff00000U
 #define ESP32P4_IRAM0_CACHEABLE_ADDRESS_HIGH    0x4ffc0000U
@@ -56,6 +63,10 @@
 #define ESP32P4_ADDRESS_IS_NONCACHEABLE(addr)      ((addr) >= (ESP32P4_IRAM0_NON_CACHEABLE_ADDRESS_LOW) && \
 	(addr) < (ESP32P4_IRAM0_NON_CACHEABLE_ADDRESS_HIGH))
 #define ESP32P4_ADDRESS_IS_L2MEM(addr) (ESP32P4_ADDRESS_IS_NONCACHEABLE(addr) || ESP32P4_ADDRESS_IS_CACHEABLE(addr))
+
+#define ESP32P4_TCM_ADDRESS_LOW     0x30100000U
+#define ESP32P4_TCM_ADDRESS_HIGH    0x30102000U
+#define ESP32P4_ADDRESS_IS_TCMEM(addr) ((addr) >= ESP32P4_TCM_ADDRESS_LOW && (addr) < ESP32P4_TCM_ADDRESS_HIGH)
 
 #define ESP32P4_RESERVED_ADDRESS_LOW            0x00000000U
 #define ESP32P4_RESERVED_ADDRESS_HIGH           0x300FFFFFU
@@ -149,9 +160,9 @@ static void esp32p4_print_reset_reason(struct target *target, uint32_t reset_rea
 
 }
 
-static bool esp32p4_is_l2mem_address(target_addr_t addr)
+static bool esp32p4_is_idram_address(target_addr_t addr)
 {
-	return ESP32P4_ADDRESS_IS_L2MEM(addr);
+	return ESP32P4_ADDRESS_IS_L2MEM(addr) || ESP32P4_ADDRESS_IS_TCMEM(addr);
 }
 
 static bool esp32p4_is_reserved_address(target_addr_t addr)
@@ -172,7 +183,7 @@ static const struct esp_flash_breakpoint_ops esp32p4_flash_brp_ops = {
 
 static const char *esp32p4_csrs[] = {
 	"mie", "mcause", "mip", "mtvt", "mnxti",
-	"mintstatus", "mscratchcsw", "mscratchcswl",
+	"mscratchcsw", "mscratchcswl",
 	"mcycle", "minstret", "mcounteren", "mcountinhibit",
 	"mhpmcounter8", "mhpmcounter9", "mhpmcounter13", "mhpmevent8", "mhpmevent9", "mhpmevent13",
 	"mcycleh", "minstreth", "mhpmcounter8h", "mhpmcounter9h", "mhpmcounter13h",
@@ -187,6 +198,7 @@ static const char *esp32p4_csrs[] = {
 	"csr_pma_addr2", "csr_pma_addr3", "csr_pma_addr4", "csr_pma_addr5", "csr_pma_addr6", "csr_pma_addr7",
 	"csr_pma_addr8", "csr_pma_addr9", "csr_pma_addr10", "csr_pma_addr11", "csr_pma_addr12", "csr_pma_addr13",
 	"csr_pma_addr14", "csr_pma_addr15",
+	"csr_mintstatus",
 };
 
 static int esp32p4_target_create(struct target *target, Jim_Interp *interp)
@@ -207,8 +219,10 @@ static int esp32p4_target_create(struct target *target, Jim_Interp *interp)
 	esp_riscv->print_reset_reason = &esp32p4_print_reset_reason;
 	esp_riscv->existent_csrs = esp32p4_csrs;
 	esp_riscv->existent_csr_size = ARRAY_SIZE(esp32p4_csrs);
-	esp_riscv->is_dram_address = esp32p4_is_l2mem_address;
-	esp_riscv->is_iram_address = esp32p4_is_l2mem_address;
+	esp_riscv->existent_ro_csrs = NULL;
+	esp_riscv->existent_ro_csr_size = 0;
+	esp_riscv->is_dram_address = esp32p4_is_idram_address;
+	esp_riscv->is_iram_address = esp32p4_is_idram_address;
 
 	if (esp_riscv_alloc_trigger_addr(target) != ERROR_OK)
 		return ERROR_FAIL;
@@ -239,47 +253,54 @@ static int esp32p4_init_target(struct command_context *cmd_ctx,
 	return ERROR_OK;
 }
 
-static inline uint32_t esp32p4_make_non_cachable_addr(uint32_t address)
+static int esp32p4_sync_l1_cache(struct target *target, target_addr_t address, uint32_t size, uint32_t map,
+	uint32_t op)
 {
-	return (address & ESP32P4_NON_CACHEABLE_OFFSET) ? (address + ESP32P4_NON_CACHEABLE_OFFSET) : address;
-}
-
-static int esp32p4_sync_cache(struct target *target, uint32_t op)
-{
-	int res;
 	uint8_t value_buf[4];
+	target_addr_t start_aligned_addr = ALIGN_DOWN(address, ESP32P4_CACHE_L1_LINE_SIZE);
+	target_addr_t end_aligned_addr = ALIGN_DOWN(address + size + ESP32P4_CACHE_L1_LINE_SIZE - 1,
+		ESP32P4_CACHE_L1_LINE_SIZE);
+	uint32_t aligned_size = end_aligned_addr - start_aligned_addr;
 
-	target_buffer_set_u32(target, value_buf, ESP32P4_CACHE_MAP_L1_DCACHE | ESP32P4_CACHE_MAP_L2_CACHE);
-	res = esp_riscv_write_memory(target, ESP32P4_CACHE_SYNC_MAP_REG, 4, 1, value_buf);
+	// TODO: what if cache is disabled! No way to understand from the OpenOCD point of view.
+
+	target_buffer_set_u32(target, value_buf, map);
+	int res = esp_riscv_write_memory(target, ESP32P4_CACHE_SYNC_MAP_REG, 4, 1, value_buf);
 	if (res != ERROR_OK)
 		return res;
-	target_buffer_set_u32(target, value_buf, 0);
+
+	target_buffer_set_u32(target, value_buf, start_aligned_addr);
 	res = esp_riscv_write_memory(target, ESP32P4_CACHE_SYNC_ADDR_REG, 4, 1, value_buf);
 	if (res != ERROR_OK)
 		return res;
+
+	target_buffer_set_u32(target, value_buf, aligned_size);
 	res = esp_riscv_write_memory(target, ESP32P4_CACHE_SYNC_SIZE_REG, 4, 1, value_buf);
 	if (res != ERROR_OK)
 		return res;
+
 	target_buffer_set_u32(target, value_buf, op);
-	res = esp_riscv_write_memory(target, ESP32P4_CACHE_SYNC_CTRL_REG, 4, 1, value_buf);
-	return res;
+	return esp_riscv_write_memory(target, ESP32P4_CACHE_SYNC_CTRL_REG, 4, 1, value_buf);
+
+	/* Looks like no need to wait for sync done. Everytime ESP32P4_CACHE_SYNC_CTRL_REG read as 0x10 at first try */
 }
 
 static int esp32p4_read_memory(struct target *target, target_addr_t address,
 	uint32_t size, uint32_t count, uint8_t *buffer)
 {
-	/* TODO: check that do we still need the cache related things */
-	if (ESP32P4_ADDRESS_IS_L2MEM(address)) {
-		int res = esp32p4_sync_cache(target, ESP32P4_CACHE_SYNC_WRITEBACK);
-		if (res != ERROR_OK)
-			LOG_TARGET_WARNING(target, "Cache writeback failed! Read main memory anyway.");
-		address = esp32p4_make_non_cachable_addr(address);
-	}
+	// TODO: check all valid/invalid memory regions
 
 	if (esp32p4_is_reserved_address(address)) {
 		/* TODO: OCD-976 */
 		memset(buffer, 0, size * count);
 		return ERROR_OK;
+	}
+
+	if (ESP32P4_ADDRESS_IS_L2MEM(address)) {
+		int res = esp32p4_sync_l1_cache(target, address, size * count, ESP32P4_CACHE_MAP_ALL,
+			ESP32P4_CACHE_SYNC_WRITEBACK);
+		if (res != ERROR_OK)
+			LOG_TARGET_WARNING(target, "Cache writeback failed! Read main memory anyway.");
 	}
 
 	return esp_riscv_read_memory(target, address, size, count, buffer);
@@ -290,17 +311,22 @@ static int esp32p4_write_memory(struct target *target, target_addr_t address,
 {
 	bool cache_invalidate = false;
 
-	/* TODO: check that do we still need the cache related things */
+	// TODO: check all valid/invalid memory regions
+
 	if (ESP32P4_ADDRESS_IS_L2MEM(address)) {
 		/* write to main memory and invalidate cache */
-		esp32p4_sync_cache(target, ESP32P4_CACHE_SYNC_WRITEBACK);
-		address = esp32p4_make_non_cachable_addr(address);
+		int res = esp32p4_sync_l1_cache(target, address, size * count, ESP32P4_CACHE_MAP_ALL,
+			ESP32P4_CACHE_SYNC_WRITEBACK);
+		if (res != ERROR_OK)
+			LOG_TARGET_WARNING(target, "Cache writeback failed! Write main memory anyway.");
 		cache_invalidate = true;
 	}
 
 	int res = esp_riscv_write_memory(target, address, size, count, buffer);
 
-	if (cache_invalidate && esp32p4_sync_cache(target, ESP32P4_CACHE_SYNC_INVALIDATE) != ERROR_OK)
+	if (cache_invalidate &&
+		esp32p4_sync_l1_cache(target, address, size * count, ESP32P4_CACHE_MAP_ALL,
+			ESP32P4_CACHE_SYNC_INVALIDATE) != ERROR_OK)
 		LOG_TARGET_WARNING(target, "Cache invalidate failed!");
 
 	return res;
@@ -339,7 +365,7 @@ struct target_type esp32p4_target = {
 	.resume = esp_riscv_resume,
 	.step = riscv_openocd_step,
 
-	.assert_reset = riscv_assert_reset,
+	.assert_reset = esp_riscv_assert_reset,
 	.deassert_reset = riscv_deassert_reset,
 
 	.read_memory = esp32p4_read_memory,
@@ -349,7 +375,7 @@ struct target_type esp32p4_target = {
 
 	.get_gdb_arch = riscv_get_gdb_arch,
 	.get_gdb_reg_list = riscv_get_gdb_reg_list,
-	.get_gdb_reg_list_noread = riscv_get_gdb_reg_list_noread,
+	.get_gdb_reg_list_noread = esp_riscv_get_gdb_reg_list_noread,
 
 	.add_breakpoint = esp_riscv_breakpoint_add,
 	.remove_breakpoint = esp_riscv_breakpoint_remove,

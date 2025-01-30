@@ -20,6 +20,7 @@ install(DIRECTORY tcl/ DESTINATION ${pkgdatadir}/scripts)
 install(FILES contrib/60-openocd.rules DESTINATION ${pkgdatadir}/contrib)
 install(DIRECTORY contrib/libdcc DESTINATION ${pkgdatadir}/contrib)
 install(FILES tools/esp_detect_config.py DESTINATION ${pkgdatadir}/espressif/tools)
+install(FILES tools/esp_problems_hints.yml DESTINATION ${pkgdatadir}/espressif/tools)
 install(FILES contrib/loaders/flash/espressif/esp32c6/inc/stub_flash_idf_binary_code.inc DESTINATION ${pkgdatadir}/espressif/stub_bins/esp32c6)
 install(FILES contrib/loaders/flash/espressif/esp32c6/inc/stub_flash_idf_binary_data.inc DESTINATION ${pkgdatadir}/espressif/stub_bins/esp32c6)
 install(FILES contrib/loaders/flash/espressif/esp32c6/stub_flash_idf_image.h DESTINATION ${pkgdatadir}/espressif/stub_bins/esp32c6)
@@ -32,7 +33,7 @@ if(BUILD_JLINK)
 endif()
 
 #TODO can be added to the ADDITIONAL_CLEAN_FILES properties
-if(BUILD_GCOV)
+if(USE_GCOV)
 	add_custom_target(gcov-clean
 		COMMAND ${CMAKE_MAKE_PROGRAM} clean
 		COMMAND find . -name "*.gcno" -type f -delete

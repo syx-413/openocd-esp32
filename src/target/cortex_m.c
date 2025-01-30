@@ -989,6 +989,18 @@ static int cortex_m_poll_one(struct target *target)
 			 * and keep it until the next poll to allow its detection */
 			return ERROR_OK;
 		}
+
+		/* refresh status bits */
+		retval = cortex_m_read_dhcsr_atomic_sticky(target);
+		if (retval != ERROR_OK)
+			return retval;
+
+		/* If still under reset, quit and re-check at next poll */
+		if (cortex_m->dcb_dhcsr_cumulated_sticky & S_RESET_ST) {
+			cortex_m->dcb_dhcsr_cumulated_sticky &= ~S_RESET_ST;
+			return ERROR_OK;
+		}
+
 		/* S_RESET_ST was expected (in a reset command). Continue processing
 		 * to quickly get out of TARGET_RESET state */
 	}
@@ -1457,7 +1469,7 @@ static int cortex_m_resume(struct target *target, int current,
 	if (target->smp && !debug_execution) {
 		retval = cortex_m_restore_smp(target, !!handle_breakpoints);
 		if (retval != ERROR_OK)
-			LOG_WARNING("resume of a SMP target failed, trying to resume current one");
+			LOG_TARGET_WARNING(target, "resume of a SMP target failed, trying to resume current one");
 	}
 
 	cortex_m_restart_one(target, !!debug_execution);
@@ -2541,7 +2553,7 @@ static bool cortex_m_has_tz(struct target *target)
 
 	int retval = target_read_u32(target, DAUTHSTATUS, &dauthstatus);
 	if (retval != ERROR_OK) {
-		LOG_WARNING("Error reading DAUTHSTATUS register");
+		LOG_TARGET_WARNING(target, "Error reading DAUTHSTATUS register");
 		return false;
 	}
 	return (dauthstatus & DAUTHSTATUS_SID_MASK) != 0;
@@ -2590,7 +2602,7 @@ int cortex_m_examine(struct target *target)
 			} else {
 				armv7m->debug_ap = dap_get_ap(swjdp, cortex_m->apsel);
 				if (!armv7m->debug_ap) {
-					LOG_ERROR("Cannot get AP");
+					LOG_TARGET_ERROR(target, "Cannot get AP");
 					return ERROR_FAIL;
 				}
 			}
@@ -2647,9 +2659,9 @@ int cortex_m_examine(struct target *target)
 			LOG_TARGET_WARNING(target, "Erratum 3092511: Cortex-M7 can halt in an incorrect address when breakpoint and exception occurs simultaneously");
 			cortex_m->incorrect_halt_erratum = true;
 			if (armv7m->is_hla_target)
-				LOG_WARNING("No erratum 3092511 workaround on hla adapter");
+				LOG_TARGET_WARNING(target, "No erratum 3092511 workaround on hla adapter");
 			else
-				LOG_INFO("The erratum 3092511 workaround will resume after an incorrect halt");
+				LOG_TARGET_INFO(target, "The erratum 3092511 workaround will resume after an incorrect halt");
 		}
 		LOG_TARGET_DEBUG(target, "cpuid: 0x%8.8" PRIx32 "", cpuid);
 

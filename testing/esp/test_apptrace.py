@@ -78,6 +78,7 @@ class ApptraceTestsImpl:
             self.assertEqual(line, "[%d %s]\n" % (i, " " * (i * 20)))
         os.remove(trace_file_name)
 
+    @skip_for_chip(['esp32'], "skipped - OCD-1047")
     def test_apptrace_reset(self):
         """
             This test checks that apptracing continue to work if target resets between start and stop
@@ -160,6 +161,10 @@ class ApptraceTestsDual(ApptraceTestAppTestsDual, ApptraceTestsImpl):
     def tearDown(self):
         ApptraceTestAppTestsDual.tearDown(self)
         ApptraceTestsImpl.tearDown(self)
+
+    @skip_for_chip_and_ver(['5.3'], ['esp32p4'], "skipped - OCD-1052")
+    def test_apptrace_dest_tcp(self):
+        super(ApptraceTestAppTestsDual, self).test_apptrace_dest_tcp()
 
 class ApptraceTestsSingle(ApptraceTestAppTestsSingle, ApptraceTestsImpl):
     """ Test cases via GDB in single core mode

@@ -33,6 +33,8 @@ class DebuggerSpecialTestsImpl:
 
     def _debug_image(self):
         self.select_sub_test("blink")
+        # Filling HW breakpoints slots to make test using SW flash breakpoints
+        self.fill_hw_bps(keep_avail=2)
         bps = ['app_main', 'gpio_set_direction', 'gpio_set_level', 'vTaskDelay']
         for f in bps:
             self.add_bp(f)
@@ -44,7 +46,6 @@ class DebuggerSpecialTestsImpl:
         self.run_to_bp_and_check(dbg.TARGET_STOP_REASON_BP, 'vTaskDelay', ['vTaskDelay0'])
         self.clear_bps()
 
-    @skip_for_chip(['esp32s3', 'esp32', 'esp32c5', 'esp32c61'])
     def test_debugging_works_after_hw_reset(self):
         """
             This test checks that debugging works after HW reset.
@@ -232,6 +233,8 @@ class PsramTestsImpl:
             3) Target program checks PSRAM memory contents and calls 'assert()' in case of error,
             so test expects propgram to be stopped on breakpoints only. Stop at the call to 'assert()' is a failure.
         """
+        # Filling HW breakpoints slots to make test using SW flash breakpoints
+        self.fill_hw_bps(keep_avail=2)
         # 2 HW breaks + 1 flash SW break + RAM SW break
         bps = ['app_main', 'gpio_set_direction', 'gpio_set_level', 'vTaskDelay']
         for f in bps:
@@ -252,6 +255,8 @@ class PsramTestsImpl:
             3) Target program checks PSRAM memory contents and calls 'assert()' in case of error,
             so test expects propgram to be stopped on breakpoints only. Stop at the call to 'assert()' is a failure.
         """
+        # Filling HW breakpoints slots to make test using SW flash breakpoints
+        self.fill_hw_bps(keep_avail=2)
         # 2 HW breaks + 1 flash SW break + RAM SW break
         bps = ['gh264_psram_check_bp_1', 'gh264_psram_check_bp_2', 'gh264_psram_check_bp_3']
         for f in bps:

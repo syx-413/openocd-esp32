@@ -19,6 +19,7 @@
 #include "stub_logger.h"
 #include "stub_flasher_int.h"
 
+#include "mcu_boot.h"
 
 #if STUB_LOG_ENABLE == 1
 	#define STUB_BENCH(var)	\
@@ -29,6 +30,44 @@
 #endif
 
 #define STUB_BP_INSN_SECT_BUF_SIZE        (2 * STUB_FLASH_SECTOR_SIZE)
+
+#define CHECKSUM_ALIGN        16
+#define IS_PADD(addr) ((addr) == 0)
+#define IS_DRAM(addr) ((addr) >= SOC_DRAM_LOW && (addr) < SOC_DRAM_HIGH)
+#define IS_IRAM(addr) ((addr) >= SOC_IRAM_LOW && (addr) < SOC_IRAM_HIGH)
+#define IS_IROM(addr) ((addr) >= SOC_IROM_LOW && (addr) < SOC_IROM_HIGH)
+#define IS_DROM(addr) ((addr) >= SOC_DROM_LOW && (addr) < SOC_DROM_HIGH)
+#define IS_SRAM(addr) (IS_IRAM(addr) || IS_DRAM(addr))
+#define IS_MMAP(addr) (IS_IROM(addr) || IS_DROM(addr))
+#if SOC_RTC_FAST_MEM_SUPPORTED
+# define IS_RTC_FAST_IRAM(addr) \
+					((addr) >= SOC_RTC_IRAM_LOW && (addr) < SOC_RTC_IRAM_HIGH)
+#define IS_RTC_FAST_DRAM(addr) \
+					((addr) >= SOC_RTC_DRAM_LOW && (addr) < SOC_RTC_DRAM_HIGH)
+#else
+#define IS_RTC_FAST_IRAM(addr) 0
+#define IS_RTC_FAST_DRAM(addr) 0
+#endif
+#if SOC_RTC_SLOW_MEM_SUPPORTED
+#define IS_RTC_SLOW_DRAM(addr) \
+					((addr) >= SOC_RTC_DATA_LOW && (addr) < SOC_RTC_DATA_HIGH)
+#else
+#define IS_RTC_SLOW_DRAM(addr) 0
+#endif
+
+#if SOC_MEM_TCM_SUPPORTED
+#define IS_TCM(addr) ((addr) >= SOC_TCM_LOW && (addr) < SOC_TCM_HIGH)
+#else
+#define IS_TCM(addr) 0
+#endif
+
+#define IS_NONE(addr) (!IS_IROM(addr) && !IS_DROM(addr) \
+					&& !IS_IRAM(addr) && !IS_DRAM(addr) \
+					&& !IS_RTC_FAST_IRAM(addr) && !IS_RTC_FAST_DRAM(addr) \
+					&& !IS_RTC_SLOW_DRAM(addr) && !IS_TCM(addr) \
+					&& !IS_PADD(addr))
+
+#define MAX_SEGMENT_COUNT 16
 
 extern void stub_sha256_start(void);
 extern void stub_sha256_data(const void *data, size_t data_len);
@@ -796,34 +835,92 @@ static uint32_t stub_flash_get_size(void)
 	return size;
 }
 
-static inline bool stub_flash_should_map(uint32_t load_addr)
+union stub_image_header {
+	struct {
+		uint8_t esp_magic;
+		uint8_t segment_count;
+	};
+	uint32_t mcuboot_magic;
+};
+
+/* Mcu Boot Image Layout
+ * mcuboot_hdr: org = 0x0,  len = 0x20 (magic 0x96f3b83d)
+ * metadata:    org = 0x20, len = 0x60 (magic 0xace637d3)
+ * FLASH:       org = 0x80, len = FLASH_SIZE - 0x80
+*/
+static int stub_flash_get_mcuboot_mappings(uint32_t off, struct esp_flash_mapping *flash_map)
 {
-	return (load_addr >= SOC_IROM_LOW && load_addr < SOC_IROM_HIGH)
-		|| (load_addr >= SOC_DROM_LOW && load_addr < SOC_DROM_HIGH);
+	esp_program_header_t prg_hdr;
+	esp_rom_spiflash_result_t rc = stub_flash_read_buff(off + MCU_BOOT_HEADER_SIZE,
+		(uint32_t *)&prg_hdr, sizeof(prg_hdr));
+	if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
+		STUB_LOGE("Failed to read mcuboot header\n");
+		return ESP_STUB_ERR_READ_APP_IMAGE_HEADER;
+	}
+
+	if (prg_hdr.header_magic != MCU_BOOT_PROGRAM_HEADER_MAGIC) {
+		STUB_LOGE("Invalid magic number 0x%x\n", prg_hdr.header_magic);
+		return ESP_STUB_ERR_INVALID_APP_MAGIC;
+	}
+
+	if (!IS_DROM(prg_hdr.drom_map_addr) || !IS_IROM(prg_hdr.irom_map_addr)) {
+		STUB_LOGE("Invalid DROM/IROM addr (0x%x)/(0x%x)\n",
+			prg_hdr.drom_map_addr, prg_hdr.irom_map_addr);
+		return ESP_STUB_ERR_FAIL;
+	}
+
+	flash_map->maps[0].phy_addr = prg_hdr.drom_flash_offset + off;
+	flash_map->maps[0].load_addr = prg_hdr.drom_map_addr;
+	flash_map->maps[0].size = prg_hdr.drom_size;
+	flash_map->maps[1].phy_addr = prg_hdr.irom_flash_offset + off;
+	flash_map->maps[1].load_addr = prg_hdr.irom_map_addr;
+	flash_map->maps[1].size = prg_hdr.irom_size;
+	flash_map->maps_num = 2;
+
+	for (unsigned int map_num = 0; map_num < 2; ++map_num)
+		STUB_LOGI("Mapped segment %d: %d bytes @ 0x%x -> 0x%x\n",
+			map_num,
+			flash_map->maps[map_num].size,
+			flash_map->maps[map_num].phy_addr,
+			flash_map->maps[map_num].load_addr);
+
+	return ESP_STUB_ERR_OK;
 }
 
 static int stub_flash_get_app_mappings(uint32_t off, struct esp_flash_mapping *flash_map)
 {
-	esp_image_header_t img_hdr;
+	union stub_image_header stub_img_hdr;
 	uint16_t maps_num = 0;
+	bool padding_checksum = false;
+	unsigned int ram_segments = 0;
 
-	esp_rom_spiflash_result_t rc =
-		stub_flash_read_buff(off, (uint32_t *)&img_hdr, sizeof(img_hdr));
+	/* clear the flash mappings */
+	for (int i = 0; i < ESP_STUB_FLASH_MAPPINGS_MAX_NUM; i++)
+		flash_map->maps[i].load_addr = 0;
+
+	esp_rom_spiflash_result_t rc = stub_flash_read_buff(off, &stub_img_hdr, sizeof(stub_img_hdr));
 	if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
-		STUB_LOGE("Failed to read app image header (%d)!\n", rc);
+		STUB_LOGE("Failed to read magic byte!\n");
 		return ESP_STUB_ERR_READ_APP_IMAGE_HEADER;
 	}
-	if (img_hdr.magic != ESP_IMAGE_HEADER_MAGIC) {
-		STUB_LOGE("Invalid magic number 0x%x in app image!\n", img_hdr.magic);
+
+	if (stub_img_hdr.mcuboot_magic == MCU_BOOT_HEADER_MAGIC) {
+		STUB_LOGI("Mcu boot header found\n");
+		return stub_flash_get_mcuboot_mappings(off, flash_map);
+	}
+
+	if (stub_img_hdr.esp_magic != ESP_IMAGE_HEADER_MAGIC) {
+		STUB_LOGE("Invalid magic number 0x%x\n", stub_img_hdr.esp_magic);
 		return ESP_STUB_ERR_INVALID_APP_MAGIC;
 	}
 
-	STUB_LOGI("Found app image: magic 0x%x, %d segments, entry @ 0x%x\n",
-		img_hdr.magic,
-		img_hdr.segment_count,
-		img_hdr.entry_addr);
-	uint32_t flash_addr = off + sizeof(img_hdr);
-	for (int k = 0; k < img_hdr.segment_count; k++) {
+	STUB_LOGI("Found app image: magic 0x%x, %d segments\n",
+		stub_img_hdr.esp_magic,
+		stub_img_hdr.segment_count);
+
+	uint32_t flash_addr = off + sizeof(esp_image_header_t);
+
+	for (int k = 0; k < MAX_SEGMENT_COUNT; k++) {
 		esp_image_segment_header_t seg_hdr;
 		rc = stub_flash_read_buff(flash_addr, (uint32_t *)&seg_hdr, sizeof(seg_hdr));
 		if (rc != ESP_ROM_SPIFLASH_RESULT_OK) {
@@ -834,22 +931,45 @@ static int stub_flash_get_app_mappings(uint32_t off, struct esp_flash_mapping *f
 			k,
 			seg_hdr.data_len,
 			seg_hdr.load_addr);
-		if (stub_flash_should_map(seg_hdr.load_addr)) {
+
+		if (IS_NONE(seg_hdr.load_addr))
+			break;
+
+		if (IS_RTC_FAST_IRAM(seg_hdr.load_addr) || IS_RTC_FAST_DRAM(seg_hdr.load_addr) ||
+			IS_RTC_SLOW_DRAM(seg_hdr.load_addr) || IS_TCM(seg_hdr.load_addr))
+			ram_segments++;
+
+		if (IS_MMAP(seg_hdr.load_addr)) {
 			STUB_LOGI("Mapped segment %d: %d bytes @ 0x%x -> 0x%x\n",
 				maps_num,
 				seg_hdr.data_len,
 				flash_addr + sizeof(seg_hdr),
 				seg_hdr.load_addr);
-			if (maps_num < ESP_STUB_FLASH_MAPPINGS_MAX_NUM) {
-				flash_map->maps[maps_num].phy_addr = flash_addr + sizeof(seg_hdr);
-				flash_map->maps[maps_num].load_addr = seg_hdr.load_addr;
-				flash_map->maps[maps_num].size = seg_hdr.data_len;
-				maps_num++;
-			} else {
+
+			/*
+			 * Make sure DROM mapping will be at the first index. (OpenOCD expects DROM mapping at index 0)
+			 * Note: New targets have identical IROM/DROM address. Thats why additional check is needed.
+			 */
+			int index = IS_DROM(seg_hdr.load_addr) && !flash_map->maps[0].load_addr ? 0 : 1;
+			flash_map->maps[index].phy_addr = flash_addr + sizeof(seg_hdr);
+			flash_map->maps[index].load_addr = seg_hdr.load_addr;
+			flash_map->maps[index].size = seg_hdr.data_len;
+			maps_num++;
+
+			if (maps_num >= ESP_STUB_FLASH_MAPPINGS_MAX_NUM)
+				/* No need to read more. DROM, IROM mapping is done */
 				break;
-			}
 		}
+
+		if (IS_SRAM(seg_hdr.load_addr))
+			ram_segments++;
+
 		flash_addr += sizeof(seg_hdr) + seg_hdr.data_len;
+		if (ram_segments == stub_img_hdr.segment_count && !padding_checksum) {
+			/* add padding */
+			flash_addr += CHECKSUM_ALIGN - (flash_addr % CHECKSUM_ALIGN);
+			padding_checksum = true;
+		}
 	}
 	flash_map->maps_num = maps_num;
 	return ESP_STUB_ERR_OK;

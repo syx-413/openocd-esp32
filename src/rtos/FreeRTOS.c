@@ -375,7 +375,7 @@ static int freertos_read_esp_symbol_table(struct rtos *rtos, int index, uint8_t 
 	assert(val);
 
 	if (!rtos_data->esp_symbols) {
-		if (!rtos->symbols[FREERTOS_VAL_ESP_OPENOCD_PARAMS].address)
+		if (!rtos->symbols || !rtos->symbols[FREERTOS_VAL_ESP_OPENOCD_PARAMS].address)
 			return ERROR_FAIL;
 
 		LOG_DEBUG(
@@ -392,7 +392,7 @@ static int freertos_read_esp_symbol_table(struct rtos *rtos, int index, uint8_t 
 		if (retval != ERROR_OK)
 			return retval;
 
-		if (table_size == 0) {
+		if (table_size == 0 || table_size > ESP_FREERTOS_DEBUG_TABLE_END) {
 			LOG_WARNING("esp_symbols table size (%d) is not valid!", table_size);
 			return ERROR_FAIL;
 		}

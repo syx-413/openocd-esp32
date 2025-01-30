@@ -15,6 +15,7 @@ ESP_XTENSA_BLD_FLASH_OFF = 0x1000
 ESP32_PT_FLASH_OFF = 0x8000
 # TODO: get from partition table
 ESP32_APP_FLASH_OFF = 0x10000
+ESP_XTENSA_HW_BP_CNT = 2
 
 test_apps_dir = ''
 
@@ -147,13 +148,19 @@ class GDBUtils:
 testee_info = TesteeInfo()
 
 
-def idf_ver_min(ver_str):
-    return unittest.skipIf(testee_info.idf_ver < IdfVersion.fromstr(ver_str), "requires min IDF_VER='%s', current IDF_VER='%s'" % (ver_str, testee_info.idf_ver))
+def idf_ver_min(ver_str, reason=None):
+    if reason is None:
+        reason = "requires min IDF_VER='%s', current IDF_VER='%s'" % (ver_str, testee_info.idf_ver)
+    return unittest.skipIf(testee_info.idf_ver < IdfVersion.fromstr(ver_str), reason)
 
-def run_with_version(ver_str):
-    return unittest.skipIf(testee_info.idf_ver != IdfVersion.fromstr(ver_str), "Not Applicable to this version")
+def run_with_version(ver_str, reason=None):
+    if reason is None:
+        reason = "Not Applicable to this version"
+    return unittest.skipIf(testee_info.idf_ver != IdfVersion.fromstr(ver_str), reason)
 
-def skip_for_hw_id(hw_ids_to_skip):
+def skip_for_hw_id(hw_ids_to_skip, reason=None):
+    if reason is None:
+        reason = "skipped due to HW ID '%s' matches to '%s'" % (testee_info.hw_id, hw_id_to_skip)
     skip = False
     hw_id_to_skip = ''
     for id in hw_ids_to_skip:
@@ -161,28 +168,30 @@ def skip_for_hw_id(hw_ids_to_skip):
             skip = True
             hw_id_to_skip = id
             break
-    return unittest.skipIf(skip, "skipped due to HW ID '%s' matches to '%s'" % (testee_info.hw_id, hw_id_to_skip))
+    return unittest.skipIf(skip, reason)
 
-def skip_for_chip(chips_to_skip):
+def skip_for_chip(chips_to_skip, reason=None):
+    if reason is None:
+        reason = "skipped for chip '%s'" % (testee_info.chip)
     skip = False
     for id in chips_to_skip:
         if id == testee_info.chip:
             skip = True
             break
-    return unittest.skipIf(skip, "skipped for chip '%s'" % (testee_info.chip))
+    return unittest.skipIf(skip, reason)
 
-def skip_for_chip_and_ver(ver_str, chips_to_skip):
-    skip = False
-    for id in chips_to_skip:
-        if id == testee_info.chip:
-            v1 = repr(testee_info.idf_ver).split('.')
-            v2 = ver_str.split('.')
-            # check major and minor numbers only.
-            if v1 == v2 or (v1[0] == v2[0] and v1[1] == v2[1]):
-                skip = True
-    return unittest.skipIf(skip, "for the '%s' for the IDF_VER='%s'" % (id, testee_info.idf_ver))
+def skip_for_chip_and_ver(ver_strs, chips_to_skip, reason=None):
+    if reason is None:
+        reason = "for the '%s' for the IDF_VER='%s'" % (id, testee_info.idf_ver)
+    # check major and minor numbers only.
+    v1 = repr(testee_info.idf_ver).split('.')[:2]
+    v2 = [ver_str.split('.')[:2] for ver_str in ver_strs]
+    skip = testee_info.chip in chips_to_skip and v1 in v2
+    return unittest.skipIf(skip, reason)
 
-def skip_for_arch(archs_to_skip):
+def skip_for_arch(archs_to_skip, reason=None):
+    if reason is None:
+        reason = "skipped due to arch '%s' matches to '%s'" % (testee_info.arch, arch_to_skip)
     skip = False
     arch_to_skip = ''
     for id in archs_to_skip:
@@ -190,36 +199,40 @@ def skip_for_arch(archs_to_skip):
             skip = True
             arch_to_skip = id
             break
-    return unittest.skipIf(skip, "skipped due to arch '%s' matches to '%s'" % (testee_info.arch, arch_to_skip))
+    return unittest.skipIf(skip, reason)
 
-def only_for_arch(archs_to_run):
+def only_for_arch(archs_to_run, reason=None):
+    if reason is None:
+        reason = "skipped due to arch '%s' does not match to '%s'" % (testee_info.arch, archs_to_run)
     skip = True
     for id in archs_to_run:
         if re.match(id, testee_info.arch):
             skip = False
             break
-    return unittest.skipIf(skip, "skipped due to arch '%s' does not match to '%s'" % (testee_info.arch, archs_to_run))
+    return unittest.skipIf(skip, reason)
 
-def only_for_chip(chips_to_run):
+def only_for_chip(chips_to_run, reason=None):
+    if reason is None:
+        reason = "skipped for chip '%s'" % (testee_info.chip)
     skip = True
     for id in chips_to_run:
         if id == testee_info.chip:
             skip = False
             break
-    return unittest.skipIf(skip, "skipped for chip '%s'" % (testee_info.chip))
+    return unittest.skipIf(skip, reason)
 
-def idf_ver_min_for_arch(ver_str, archs_to_run):
+def idf_ver_min_for_arch(ver_str, archs_to_run, reason=None):
     skip = True
     for id in archs_to_run:
         if re.match(id, testee_info.arch):
-            return idf_ver_min(ver_str)
+            return idf_ver_min(ver_str, reason)
     # do not skip if arch is not found
     return unittest.skipIf(False, "")
 
-def idf_ver_min_for_chip(ver_str, chips_to_skip):
+def idf_ver_min_for_chip(ver_str, chips_to_skip, reason=None):
     for chip in chips_to_skip:
         if chip == testee_info.chip:
-            return idf_ver_min(ver_str)
+            return idf_ver_min(ver_str, reason)
     # do not skip if chip is not found
     return unittest.skipIf(False, "")
 
@@ -555,6 +568,22 @@ class DebuggerTestAppTests(DebuggerTestsBase):
         self.assertEqual(frame['func'], self.test_app_cfg.entry_point)
         self.gdb.delete_bp(bp)
 
+    def get_hw_bp_count(self):
+        if testee_info.arch == 'riscv32':
+            info = self.oocd.cmd_exec('riscv info')
+            match = re.search(r'hart.trigger_count *([0-9]+)', info)
+            return int(match.group(1))
+        return ESP_XTENSA_HW_BP_CNT
+
+    def fill_hw_bps(self, keep_avail=0):
+        dummy_bps = [
+            'unused_func0', 'unused_func1', 'unused_func2', 'unused_func3',
+            'unused_func4', 'unused_func5', 'unused_func6', 'unused_func7'
+        ]
+        dummy_bp_count = self.get_hw_bp_count() - keep_avail
+        self.assertTrue(dummy_bp_count <= len(dummy_bps) and dummy_bp_count >= 0)
+        for i in range(dummy_bp_count):
+            self.add_bp(dummy_bps[i])
 
     def add_bp(self, loc, ignore_count=0, cond='', hw=False, tmp=False):
         self.bpns.append(self.gdb.add_bp(loc, ignore_count=ignore_count, cond=cond, hw=hw, tmp=tmp))
@@ -575,6 +604,10 @@ class DebuggerTestAppTests(DebuggerTestsBase):
     def select_sub_test(self, sub_test_id):
         """ Selects sub test in app running on target
         """
+        if self.test_app_cfg.test_select_var is None and self.test_app_cfg.test_id_var is None:
+            # Nuttx does not use test_select_var and test_id_var
+            return
+
         if type(sub_test_id) is str:
             self.gdb.data_eval_expr('%s=%d' % (self.test_app_cfg.test_select_var, -1))
             self.gdb.data_eval_expr('%s=\\"%s\\"' % (self.test_app_cfg.test_id_var, sub_test_id))

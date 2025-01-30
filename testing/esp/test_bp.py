@@ -20,21 +20,9 @@ class BreakpointTestsImpl:
     """
 
     def setUp(self):
-        self.bps = []
-        if testee_info.chip == "esp32c3":
-            # esp32c3 has 8 HW breakpoint slots
-            # 6 dummy HW breaks to fill in HW breaks slots and make OpenOCD using SW breakpoints in flash (seen as HW ones by GDB)
-            self.bps = ['unused_func0', 'unused_func1', 'unused_func2', 'unused_func3', 'unused_func4', 'unused_func5']
-        elif testee_info.chip == "esp32c6" or testee_info.chip == "esp32h2":
-            # esp32c6 has 4 HW breakpoint slots
-            # 2 dummy HW breaks to fill in HW breaks slots and make OpenOCD using SW breakpoints in flash (seen as HW ones by GDB)
-            self.bps = ['unused_func0', 'unused_func1']
-        elif testee_info.chip == "esp32c5":
-            # esp32c5 has 3 HW breakpoint slots
-            # 1 dummy HW break to fill in HW breaks slots and make OpenOCD using SW breakpoints in flash (seen as HW ones by GDB)
-            self.bps = ['unused_func0']
-        # + 2 HW breaks + 1 flash SW break + RAM SW break
-        self.bps += ['app_main', 'gpio_set_direction', 'gpio_set_level', 'vTaskDelay']
+        # dummy HW breaks to fill in HW breaks slots and make OpenOCD using SW breakpoints in flash (seen as HW ones by GDB)
+        self.fill_hw_bps(keep_avail=2)
+        self.bps = ['app_main', 'gpio_set_direction', 'gpio_set_level', 'vTaskDelay']
 
     def test_multi_reset_break(self):
         """
@@ -57,13 +45,14 @@ class BreakpointTestsImpl:
             self.assertEqual(cur_frame['func'], 'app_main')
 
     def readd_bps(self):
-        # remove all BPs except the first one
-        for i in range(1, len(self.bpns)):
+        # remove all non-dummy BPs except the first one
+        dummy_bp_count = len(self.bpns) - len(self.bps) + 1
+        for i in range(dummy_bp_count + 1, len(self.bpns)):
             self.gdb.delete_bp(self.bpns[i])
-        self.bpns = self.bpns[:1]
+        self.bpns = self.bpns[:dummy_bp_count + 1]
         # add removed BPs back
-        for i in range(1, len(self.bps)):
-            self.add_bp(self.bps[i])
+        for f in self.bps:
+            self.add_bp(f)
 
     def test_bp_add_remove_run(self):
         """
@@ -356,12 +345,11 @@ class DebuggerBreakpointTestsDual(DebuggerGenericTestAppTestsDual, BreakpointTes
         DebuggerGenericTestAppTestsDual.setUp(self)
         BreakpointTestsImpl.setUp(self)
 
-    @skip_for_chip_and_ver('5.1', ['esp32s3'])
+    @skip_for_chip_and_ver(['5.1'], ['esp32s3'], "skipped - OCD-1027")
     def test_2cores_concurrently_hit_bps(self):
         two_cores_concurrently_hit_bps(self)
 
-    # OCD-773
-    @skip_for_chip(['esp32', 'esp32p4'])
+    @skip_for_chip(['esp32', 'esp32p4'], "skipped - OCD-773")
     def test_appcpu_early_hw_bps(self):
         appcpu_early_hw_bps(self)
 
@@ -375,8 +363,7 @@ class DebuggerBreakpointTestsDualEncrypted(DebuggerGenericTestAppTestsDualEncryp
     def test_2cores_concurrently_hit_bps(self):
         two_cores_concurrently_hit_bps(self)
 
-    # OCD-773
-    @skip_for_chip(['esp32'])
+    @skip_for_chip(['esp32'], "skipped - OCD-773, OCD-1006")
     def test_appcpu_early_hw_bps(self):
         appcpu_early_hw_bps(self)
 

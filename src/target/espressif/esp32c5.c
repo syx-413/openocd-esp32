@@ -33,7 +33,7 @@
 #define ESP32C5_WP_NUM                          3
 
 /* ASSIST_DEBUG registers */
-#define ESP32C5_ASSIST_DEBUG_CPU0_MON_REG       0xFFFFFFFF//0x600C2000
+#define ESP32C5_ASSIST_DEBUG_CPU0_MON_REG       0x600C2000
 
 #define ESP32C5_DRAM_LOW    0x40800000
 #define ESP32C5_DRAM_HIGH   0x40860000
@@ -150,8 +150,9 @@ static const char *esp32c5_csrs[] = {
 
 static const char *esp32c5_ro_csrs[] = {
 	/* read-only CSRs, cannot be save/restored as the write would fail */
-	"cycle", "time", "instreth", "cycleh", "instret", "timeh",
-	"hpmcounter8", "hpmcounter9", "hpmcounter13", "hpmcounter8h", "hpmcounter9h", "hpmcounter13h",
+	/* TODO: Workaround solution for OCD-1066. */
+	// "cycle", "time", "instreth", "cycleh", "instret", "timeh",
+	// "hpmcounter8", "hpmcounter9", "hpmcounter13", "hpmcounter8h", "hpmcounter9h", "hpmcounter13h",
 	"mintstatus",
 	/* custom exposed CSRs will start with 'csr_' prefix*/
 	"csr_mcpuid",

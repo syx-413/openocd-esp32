@@ -21,7 +21,8 @@ nobase_dist_pkgdata_DATA = \
 
 esptoolsdir = $(pkgdatadir)/espressif/tools
 dist_esptools_DATA = \
-	tools/esp_detect_config.py
+	tools/esp_detect_config.py \
+	tools/esp_problems_hints.yml
 
 esp32c6stubsdir = $(pkgdatadir)/espressif/stub_bins/esp32c6
 dist_esp32c6stubs_DATA = \
@@ -54,6 +55,7 @@ endif
 
 # common flags used in openocd build
 AM_CFLAGS = $(GCC_WARNINGS)
+AM_LDFLAGS =
 
 AM_CPPFLAGS = $(HOST_CPPFLAGS)\
 			  -I$(top_srcdir)/src \
@@ -67,6 +69,12 @@ AM_CPPFLAGS += -I$(top_srcdir)/jimtcl \
 else
 AM_CPPFLAGS += $(JIMTCL_CFLAGS)
 endif
+
+if USE_GCOV
+AM_CFLAGS += --coverage
+AM_LDFLAGS += --coverage
+endif
+
 EXTRA_DIST += \
 	BUGS \
 	HACKING \
@@ -132,14 +140,13 @@ TCL_PATH = tcl
 TCL_FILES = find $(srcdir)/$(TCL_PATH) -name '*.cfg' -o -name '*.tcl' -o -name '*.txt' -o -name 'esp-config.json' | \
 		sed -e 's,^$(srcdir)/$(TCL_PATH),,'
 
-# Without the PERL_UNICODE="IO" workaround below when running git2cl, you get several
-# "Wide character" warnings and you also risk an invalid character encoding in
-# the generated ChangeLog file. For more information, see this bug report:
-#   Warning "Wide character in print"
-#   https://savannah.nongnu.org/bugs/?65689
+# The git log command below generates many empty text lines with only some space characters
+# for indentation purposes, so use sed to trim all trailing whitespace.
 dist-hook:
 	if test -d $(srcdir)/.git -a \( ! -e $(distdir)/ChangeLog -o -w $(distdir)/ChangeLog \) ; then \
-		git --git-dir $(srcdir)/.git log | PERL_UNICODE="IO" $(srcdir)/tools/git2cl/git2cl > $(distdir)/ChangeLog ; \
+		git --git-dir $(srcdir)/.git log --date=short --pretty="format:%ad  %aN <%aE>%n%n%w(0,4,6)* %B" \
+		| sed 's/[[:space:]]*$$//' > $(distdir)/ChangeLog.tmp && \
+		mv $(distdir)/ChangeLog.tmp $(distdir)/ChangeLog; \
 	fi
 	for i in $$($(TCL_FILES)); do \
 		j="$(distdir)/$(TCL_PATH)/$$i" && \

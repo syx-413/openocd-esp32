@@ -375,15 +375,17 @@ int openocd_main(int argc, char *argv[])
 
 	log_exit();
 
+#if USE_GCOV
+	/* Always explicitly dump coverage data before terminating.
+	 * Otherwise coverage would not be dumped when exit_on_signal occurs. */
+	void __gcov_dump(void);
+	__gcov_dump();
+#endif
+
 	if (ret == ERROR_FAIL)
 		return EXIT_FAILURE;
-#if !BUILD_GCOV
-	/* We want openocd to exit normally in order to 
-	generate coverage and profiling data. Killing openocd with
-	signals prevents data generation */
 	else if (ret != ERROR_OK)
 		exit_on_signal(ret);
-#endif
 
 	return ret;
 }
